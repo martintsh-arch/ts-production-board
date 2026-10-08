@@ -86,6 +86,7 @@ async function migrate() {
   await pool.query(`
     ALTER TABLE products ADD COLUMN IF NOT EXISTS code TEXT;
     CREATE UNIQUE INDEX IF NOT EXISTS products_code_idx ON products(code);
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS unit TEXT NOT NULL DEFAULT '';
     CREATE TABLE IF NOT EXISTS customers (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
@@ -126,7 +127,7 @@ function rowTask(r) {
     cat: r.cat, variety: r.variety, qty: r.qty, orderedQty: r.ordered_qty, shipDate: r.ship_date,
     note: r.note, status: r.status, order: r.sort_order, lot: r.lot,
     completedAt: r.completed_at, operator: r.operator, matDate: r.mat_date, matArr: r.mat_arr,
-    parentId: r.parent_id, lotHistory: r.lot_history, createdAt: r.created_at,
+    unit: r.unit || '', parentId: r.parent_id, lotHistory: r.lot_history, createdAt: r.created_at,
   };
 }
 async function getConfig(client) {
@@ -185,19 +186,22 @@ app.get('/api/state', wrap(async (req, res) => {
 }));
 
 /* orders */
+const UNITS = ['桶', '箱', '瓶'];
 async function readOrderBody(b) {
   const customer = str(b.customer, 100);
   const productId = parseInt(b.productId, 10);
   const qty = parseInt(b.qty, 10);
   const shipDate = str(b.shipDate, 10);
   const note = str(b.note, 300);
+  const unit = str(b.unit, 4);
+  if (!UNITS.includes(unit)) throw new UserError('請選擇單位（桶、箱、瓶）');
   if (!customer) throw new UserError('請輸入客戶名稱');
   if (!productId) throw new UserError('請選擇品項');
   if (!qty || qty < 1) throw new UserError('數量需大於 0');
   if (!isDate(shipDate)) throw new UserError('請選擇出貨日');
   const { rows } = await pool.query('SELECT * FROM products WHERE id = $1', [productId]);
   if (!rows[0]) throw new UserError('找不到這個品項');
-  return { customer, product: rows[0], qty, shipDate, note };
+  return { customer, product: rows[0], qty, shipDate, note, unit };
 }
 
 async function rememberPurchase(customer, productId) {
@@ -211,22 +215,55 @@ async function rememberPurchase(customer, productId) {
 app.post('/api/tasks', wrap(async (req, res) => {
   const o = await readOrderBody(req.body || {});
   const { rows } = await pool.query(
-    `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, sort_order)
-     VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,(SELECT COALESCE(MAX(sort_order),0)+10 FROM tasks WHERE status='open'))
+    `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, unit, sort_order)
+     VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,(SELECT COALESCE(MAX(sort_order),0)+10 FROM tasks WHERE status='open'))
      RETURNING *`,
-    [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note]
+    [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, o.unit]
   );
   await rememberPurchase(o.customer, o.product.id);
   await bump();
   res.json(rowTask(rows[0]));
 }));
 
+app.post('/api/tasks/batch', wrap(async (req, res) => {
+  const b = req.body || {};
+  const items = Array.isArray(b.items) ? b.items : [];
+  if (!items.length) throw new UserError('請至少選一個品項');
+  if (items.length > 50) throw new UserError('一次最多 50 個品項');
+  const orders = [];
+  for (let i = 0; i < items.length; i++) {
+    try {
+      orders.push(await readOrderBody({ customer: b.customer, shipDate: b.shipDate, note: b.note, ...items[i] }));
+    } catch (e) {
+      if (e instanceof UserError) throw new UserError('第 ' + (i + 1) + ' 行：' + e.message);
+      throw e;
+    }
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: m } = await client.query(`SELECT COALESCE(MAX(sort_order),0) AS mx FROM tasks WHERE status='open'`);
+    let order = Number(m[0].mx);
+    for (const o of orders) {
+      order += 10;
+      await client.query(
+        `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, unit, sort_order)
+         VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10)`,
+        [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, o.unit, order]);
+    }
+    await bump(client);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+  for (const o of orders) await rememberPurchase(o.customer, o.product.id);
+  res.json({ created: orders.length });
+}));
+
 app.put('/api/tasks/:id', wrap(async (req, res) => {
   const o = await readOrderBody(req.body || {});
   const { rowCount } = await pool.query(
-    `UPDATE tasks SET customer=$1, product_id=$2, product_name=$3, cat=$4, variety=$5, qty=$6, ordered_qty=$6, ship_date=$7, note=$8
+    `UPDATE tasks SET customer=$1, product_id=$2, product_name=$3, cat=$4, variety=$5, qty=$6, ordered_qty=$6, ship_date=$7, note=$8, unit=$10
      WHERE id=$9 AND status='open'`,
-    [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, req.params.id]
+    [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, req.params.id, o.unit]
   );
   if (!rowCount) throw new UserError('這筆訂單已完成或已取消，無法修改');
   await bump();
@@ -319,9 +356,9 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
     const rest = t.qty - qty;
     if (rest > 0) {
       await client.query(
-        `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, sort_order, parent_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-        [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty, t.ship_date, t.note, t.sort_order, t.id]
+        `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, sort_order, parent_id, unit)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']
       );
     }
     await bump(client);
@@ -496,10 +533,10 @@ app.put('/api/config', wrap(async (req, res) => {
 app.get('/api/export.csv', wrap(async (req, res) => {
   const cfg = await getConfig();
   const { rows } = await pool.query(`SELECT * FROM tasks WHERE status='done' ORDER BY completed_at DESC`);
-  const head = ['完成時間', '批號', '類別', '品項', '完成數量', '訂單數量', '客戶', '出貨日', '操作人', '原料有效日', '到貨次序', '備註'];
+  const head = ['完成時間', '批號', '類別', '品項', '完成數量', '訂單數量', '單位', '客戶', '出貨日', '操作人', '原料有效日', '到貨次序', '備註'];
   const fmt = (d) => d ? new Date(d).toLocaleString('zh-TW', { timeZone: TZ, hour12: false }) : '';
   const lines = [head].concat(rows.map((t) => [fmt(t.completed_at), t.lot, (cfg.cats[t.cat] || {}).name || t.cat,
-    t.product_name, t.qty, t.ordered_qty || t.qty, t.customer, t.ship_date, t.operator, t.mat_date || '', t.mat_arr || '', t.note || '']));
+    t.product_name, t.qty, t.ordered_qty || t.qty, t.unit || '', t.customer, t.ship_date, t.operator, t.mat_date || '', t.mat_arr || '', t.note || '']));
   const csv = '﻿' + lines.map((r) => r.map((c) => '"' + String(c == null ? '' : c).replace(/"/g, '""') + '"').join(',')).join('\r\n');
   const name = '生產紀錄_' + Object.values(taipeiParts()).join('') + '.csv';
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
