@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: ts-production-board
+    runtime: node
+    plan: starter
+    region: singapore
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_PIN
+        sync: false

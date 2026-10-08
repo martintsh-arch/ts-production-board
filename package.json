@@ -1,0 +1,19 @@
+{
+  "name": "ts-production-board",
+  "version": "1.0.0",
+  "description": "統香蜂蜜 生產排程看板",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "sortablejs": "^1.15.2"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  }
+}
