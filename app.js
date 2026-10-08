@@ -41,7 +41,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh(fa
 
 function showPin(){
   if($('#pinbox'))return;
-  $('#modal').innerHTML='<div class="scrim"><form class="sheet" id="pinbox" style="border-radius:18px;align-self:center;max-width:420px"><div class="pname">請輸入公司密碼</div><input id="pinin" class="mono" type="password" inputmode="numeric" autocomplete="off" style="font-size:24px"><div class="err" id="pinerr"></div><button class="primary" type="submit">進入</button></form></div>';
+  $('#modal').innerHTML='<div class="scrim"><form class="sheet" id="pinbox" style="border-radius:18px;align-self:center;max-width:420px"><div class="pname">請輸入公司密碼</div><input id="pinin" class="mono" type="password" autocapitalize="off" autocorrect="off" autocomplete="off" style="font-size:24px"><div class="err" id="pinerr"></div><button class="primary" type="submit">進入</button></form></div>';
   $('#pinin').focus();
   $('#pinbox').onsubmit=async e=>{e.preventDefault();S.pin=$('#pinin').value.trim();
     const r=await fetch('/api/rev',{headers:{'X-PIN':S.pin}});
