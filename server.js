@@ -83,6 +83,23 @@ async function migrate() {
       value BIGINT NOT NULL
     );
   `);
+  await pool.query(`
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS code TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS products_code_idx ON products(code);
+    CREATE TABLE IF NOT EXISTS customers (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      code TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS customer_products (
+      customer TEXT NOT NULL,
+      product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      times INTEGER NOT NULL DEFAULT 1,
+      last_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (customer, product_id)
+    );
+  `);
   await pool.query(
     `INSERT INTO config (id, data) VALUES (1, $1) ON CONFLICT (id) DO NOTHING`,
     [JSON.stringify(DEFAULT_CONFIG)]
@@ -126,7 +143,7 @@ const wrap = (fn) => (req, res) =>
 
 /* ---------- app ---------- */
 const app = express();
-app.use(express.json({ limit: '200kb' }));
+app.use(express.json({ limit: '3mb' }));
 
 app.get('/healthz', (req, res) => res.send('ok'));
 
@@ -146,18 +163,22 @@ app.get('/api/rev', wrap(async (req, res) => {
 }));
 
 app.get('/api/state', wrap(async (req, res) => {
-  const [rev, open, done, products, config] = await Promise.all([
+  const [rev, open, done, products, config, customers, history] = await Promise.all([
     pool.query(`SELECT value FROM meta WHERE key = 'rev'`),
     pool.query(`SELECT * FROM tasks WHERE status = 'open' ORDER BY sort_order, id`),
     pool.query(`SELECT * FROM tasks WHERE status = 'done' ORDER BY completed_at DESC LIMIT 2000`),
-    pool.query(`SELECT * FROM products ORDER BY cat, variety, name`),
+    pool.query(`SELECT * FROM products ORDER BY code NULLS LAST, name`),
     getConfig(),
+    pool.query(`SELECT id, name, code FROM customers ORDER BY name`),
+    pool.query(`SELECT customer, product_id, times FROM customer_products ORDER BY times DESC, last_at DESC`),
   ]);
   res.json({
     rev: Number(rev.rows[0].value),
     open: open.rows.map(rowTask),
     done: done.rows.map(rowTask),
     products: products.rows,
+    customers: customers.rows,
+    history: history.rows.map((h) => [h.customer, h.product_id, h.times]),
     config,
     now: taipeiParts(),
   });
@@ -179,6 +200,14 @@ async function readOrderBody(b) {
   return { customer, product: rows[0], qty, shipDate, note };
 }
 
+async function rememberPurchase(customer, productId) {
+  await pool.query(`INSERT INTO customers (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`, [customer]);
+  await pool.query(
+    `INSERT INTO customer_products (customer, product_id) VALUES ($1,$2)
+     ON CONFLICT (customer, product_id) DO UPDATE SET times = customer_products.times + 1, last_at = now()`,
+    [customer, productId]);
+}
+
 app.post('/api/tasks', wrap(async (req, res) => {
   const o = await readOrderBody(req.body || {});
   const { rows } = await pool.query(
@@ -187,6 +216,7 @@ app.post('/api/tasks', wrap(async (req, res) => {
      RETURNING *`,
     [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note]
   );
+  await rememberPurchase(o.customer, o.product.id);
   await bump();
   res.json(rowTask(rows[0]));
 }));
@@ -229,7 +259,7 @@ app.post('/api/tasks/reorder', wrap(async (req, res) => {
 /* lot preview / finish */
 function lotPrefix(cfg, { cat, variety, matDate, matArr }) {
   const c = cfg.cats[cat];
-  if (!c) throw new UserError('沒有這個類別代碼：' + cat);
+  if (!c) throw new UserError(cat ? '沒有這個類別代碼：' + cat : '請先選擇產品類別');
   const t = taipeiParts();
   const y = yearCode(t.y);
   if (c.rule === 'material') {
@@ -322,23 +352,132 @@ app.post('/api/tasks/:id/lot', wrap(async (req, res) => {
 }));
 
 /* products */
+async function checkCat(cat, variety) {
+  const cfg = await getConfig();
+  if (!cat) return { cat: '', variety: '' };
+  if (!cfg.cats[cat]) throw new UserError('沒有這個類別');
+  if (cfg.cats[cat].rule === 'material') return { cat, variety: '' };
+  if (!((cfg.varieties || {})[cat] || {})[variety]) throw new UserError('請選擇品種');
+  return { cat, variety };
+}
 app.post('/api/products', wrap(async (req, res) => {
   const b = req.body || {};
-  const name = str(b.name, 100), cat = str(b.cat, 2), variety = str(b.variety, 2);
-  const cfg = await getConfig();
+  const name = str(b.name, 100), code = str(b.code, 40).toUpperCase() || null;
   if (!name) throw new UserError('請輸入品名／規格');
-  if (!cfg.cats[cat]) throw new UserError('沒有這個類別');
-  if (cfg.cats[cat].rule !== 'material' && !((cfg.varieties || {})[cat] || {})[variety]) throw new UserError('請選擇品種');
+  const cv = await checkCat(str(b.cat, 2), str(b.variety, 2));
+  if (!cv.cat) throw new UserError('請選擇類別');
+  if (code) {
+    const dup = await pool.query('SELECT name FROM products WHERE code=$1', [code]);
+    if (dup.rowCount) throw new UserError('品號 ' + code + ' 已經是「' + dup.rows[0].name + '」');
+  }
   const { rows } = await pool.query(
-    `INSERT INTO products (name, cat, variety) VALUES ($1,$2,$3) RETURNING *`,
-    [name, cat, cfg.cats[cat].rule === 'material' ? '' : variety]);
+    `INSERT INTO products (name, cat, variety, code) VALUES ($1,$2,$3,$4) RETURNING *`,
+    [name, cv.cat, cv.variety, code]);
   await bump();
   res.json(rows[0]);
+}));
+app.put('/api/products/:id', wrap(async (req, res) => {
+  const b = req.body || {};
+  const cv = await checkCat(str(b.cat, 2), str(b.variety, 2));
+  const { rowCount } = await pool.query(`UPDATE products SET cat=$1, variety=$2 WHERE id=$3`, [cv.cat, cv.variety, req.params.id]);
+  if (!rowCount) throw new UserError('找不到這個品項');
+  // open orders of this product follow the new category
+  await pool.query(`UPDATE tasks SET cat=$1, variety=$2 WHERE product_id=$3 AND status='open'`, [cv.cat, cv.variety, req.params.id]);
+  await bump();
+  res.json({ ok: true });
 }));
 app.post('/api/products/:id/toggle', wrap(async (req, res) => {
   await pool.query(`UPDATE products SET active = NOT active WHERE id=$1`, [req.params.id]);
   await bump();
   res.json({ ok: true });
+}));
+
+/* customers */
+app.put('/api/customers/:id', wrap(async (req, res) => {
+  const code = str(req.body && req.body.code, 40);
+  await pool.query(`UPDATE customers SET code=$1 WHERE id=$2`, [code, req.params.id]);
+  await bump();
+  res.json({ ok: true });
+}));
+
+/* best-guess category for a product name; corrected by hand in 設定 when wrong */
+const NOT_PRODUCED = /空桶|塑膠桶|運費|油瓶|花粉|蜂王|蜂蠟|花露/;
+function classify(name) {
+  if (NOT_PRODUCED.test(name)) return { cat: '', variety: '', inactive: true };
+  if (/糖漿/.test(name)) return { cat: 'S', variety: '' };
+  if (/果樂茶/.test(name)) {
+    const v = /檸檬/.test(name) ? '1' : /百香果|葡萄柚/.test(name) ? '2' : /芒果|柳橙|草莓/.test(name) ? '3' : /蜜桃|荔枝/.test(name) ? '4' : '';
+    return { cat: v ? 'J' : '', variety: v };
+  }
+  if (/芥花/.test(name)) return { cat: 'O', variety: '2' };
+  if (/苦茶油/.test(name)) return { cat: 'O', variety: '1' };
+  if (/調和蜂蜜/.test(name)) return { cat: 'M', variety: '1' };
+  if (/泰國/.test(name)) return { cat: 'P', variety: '2' };
+  if (/龍眼|琥珀/.test(name)) return { cat: 'P', variety: '1' };
+  if (/荔枝/.test(name)) return { cat: 'P', variety: '3' };
+  if (/百花/.test(name)) return { cat: 'P', variety: '4' };
+  if (/蜜/.test(name)) return { cat: 'P', variety: '4' };
+  return { cat: '', variety: '' };
+}
+
+/* import sales history exported from 新高手: rows of {customerCode?, customer, code, name} */
+app.post('/api/import-history', wrap(async (req, res) => {
+  const list = Array.isArray(req.body && req.body.rows) ? req.body.rows : [];
+  const rows = list.map((r) => ({
+    customerCode: str(r.customerCode, 40), customer: str(r.customer, 100),
+    code: str(r.code, 40).toUpperCase(), name: str(r.name, 120),
+  })).filter((r) => r.customer && r.code && r.name);
+  if (!rows.length) throw new UserError('檔案裡找不到可用的資料（需要客戶、品號、品名）');
+  // most common name per product code
+  const names = {};
+  rows.forEach((r) => { names[r.code] = names[r.code] || {}; names[r.code][r.name] = (names[r.code][r.name] || 0) + 1; });
+  const pairs = {};
+  rows.forEach((r) => { const k = r.customer + '\u0000' + r.code; pairs[k] = (pairs[k] || 0) + 1; });
+  const custCodes = {};
+  rows.forEach((r) => { if (r.customerCode) custCodes[r.customer] = r.customerCode; });
+  const client = await pool.connect();
+  let newProducts = 0, guessed = 0, hidden = 0;
+  try {
+    await client.query('BEGIN');
+    // make sure the 調和蜂蜜 category exists for the classifier
+    const cfg = await getConfig(client);
+    if (!cfg.cats.M) {
+      cfg.cats.M = { name: '調和蜂蜜', rule: 'month' };
+      cfg.varieties = cfg.varieties || {};
+      cfg.varieties.M = Object.assign({ 1: '特A級調和蜂蜜' }, cfg.varieties.M || {});
+      await client.query(`UPDATE config SET data=$1 WHERE id=1`, [JSON.stringify(cfg)]);
+    }
+    const idByCode = {};
+    for (const [code, m] of Object.entries(names)) {
+      const name = Object.entries(m).sort((a, b) => b[1] - a[1])[0][0];
+      const g = classify(name);
+      const r = await client.query(
+        `INSERT INTO products (code, name, cat, variety, active) VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name,
+           cat = CASE WHEN products.cat = '' THEN EXCLUDED.cat ELSE products.cat END,
+           variety = CASE WHEN products.cat = '' THEN EXCLUDED.variety ELSE products.variety END
+         RETURNING id, (xmax = 0) AS inserted`, [code, name, g.cat, g.variety, !g.inactive]);
+      idByCode[code] = r.rows[0].id;
+      if (r.rows[0].inserted) { newProducts++; if (g.inactive) hidden++; else if (g.cat) guessed++; }
+    }
+    const customers = [...new Set(rows.map((r) => r.customer))];
+    for (const c of customers) {
+      await client.query(
+        `INSERT INTO customers (name, code) VALUES ($1,$2)
+         ON CONFLICT (name) DO UPDATE SET code = CASE WHEN EXCLUDED.code <> '' THEN EXCLUDED.code ELSE customers.code END`,
+        [c, custCodes[c] || '']);
+    }
+    for (const [k, times] of Object.entries(pairs)) {
+      const [c, code] = k.split('\u0000');
+      await client.query(
+        `INSERT INTO customer_products (customer, product_id, times) VALUES ($1,$2,$3)
+         ON CONFLICT (customer, product_id) DO UPDATE SET times = GREATEST(customer_products.times, EXCLUDED.times)`,
+        [c, idByCode[code], times]);
+    }
+    await bump(client);
+    await client.query('COMMIT');
+    res.json({ customers: customers.length, products: Object.keys(names).length, newProducts, guessed, hidden, pairs: Object.keys(pairs).length });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
 /* config */
