@@ -194,7 +194,7 @@ async function readOrderBody(b) {
   const shipDate = str(b.shipDate, 10);
   const note = str(b.note, 300);
   const unit = str(b.unit, 4);
-  if (!UNITS.includes(unit)) throw new UserError('請選擇單位（桶、箱、瓶）');
+  if (unit && !UNITS.includes(unit)) throw new UserError('單位只能是桶、箱或瓶');
   if (!customer) throw new UserError('請輸入客戶名稱');
   if (!productId) throw new UserError('請選擇品項');
   if (!qty || qty < 1) throw new UserError('數量需大於 0');
