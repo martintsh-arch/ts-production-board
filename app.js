@@ -1,6 +1,6 @@
 (function(){
 'use strict';
-const S={open:[],done:[],products:[],customers:[],history:[],pq:'',pOnlyMissing:false,cfg:null,rev:0,tab:'board',q:'',editOrder:null,pin:''};
+const S={recentLots:{},mine:new Set(),seen:null,open:[],done:[],products:[],customers:[],history:[],pq:'',pOnlyMissing:false,cfg:null,rev:0,tab:'board',q:'',editOrder:null,pin:''};
 const $=s=>document.querySelector(s);
 const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pad=n=>String(n).padStart(2,'0');
@@ -20,6 +20,51 @@ function setStatus(m){$('#status').textContent=m}
 function tick(){const d=new Date();$('#clock').textContent=(d.getMonth()+1)+'/'+d.getDate()+' '+pad(d.getHours())+':'+pad(d.getMinutes())}
 tick();setInterval(tick,15000);
 
+/* ---------- sound ---------- */
+const Snd={ctx:null,on:store.get('tsb_snd')!=='0',
+  unlock(){if(!this.ctx){try{this.ctx=new (window.AudioContext||window.webkitAudioContext)()}catch(e){}}if(this.ctx&&this.ctx.state==='suspended')this.ctx.resume().catch(()=>{})},
+  tone(f,t0,d,type,g){const c=this.ctx,o=c.createOscillator(),v=c.createGain(),t=c.currentTime+t0;o.type=type||'sine';o.frequency.value=f;
+    v.gain.setValueAtTime(0.0001,t);v.gain.exponentialRampToValueAtTime(g||.15,t+.02);v.gain.exponentialRampToValueAtTime(.0001,t+d);o.connect(v);v.connect(c.destination);o.start(t);o.stop(t+d+.05)},
+  play(kind){if(!this.on)return;this.unlock();if(!this.ctx)return;try{
+    if(kind==='done'){[523.25,659.25,783.99,1046.5].forEach((f,i)=>this.tone(f,i*.085,.55,'triangle',.17));this.tone(1568,.36,.7,'sine',.06)}
+    else if(kind==='notify'){this.tone(987.77,0,.3,'sine',.14);this.tone(1318.5,.13,.55,'sine',.12)}
+    else if(kind==='tap'){this.tone(740,0,.09,'sine',.06)}
+    else if(kind==='add'){this.tone(587.33,0,.12,'triangle',.1);this.tone(880,.08,.18,'triangle',.1)}
+  }catch(e){}}};
+document.addEventListener('pointerdown',()=>Snd.unlock(),{passive:true});
+function drawBell(){const b=$('#bell');if(!b)return;b.setAttribute('aria-pressed',String(Snd.on));b.setAttribute('aria-label',Snd.on?'提示音：開':'提示音：關');b.title=b.getAttribute('aria-label');
+  b.innerHTML=Snd.on?'<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span>提示音</span>'
+  :'<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.7 3A6 6 0 0 1 18 8a21.3 21.3 0 0 0 .6 5"/><path d="M17 17H3s3-2 3-9a4.67 4.67 0 0 1 .3-1.7"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><path d="m2 2 20 20"/></svg><span>靜音</span>'}
+document.addEventListener('click',e=>{if(e.target.closest('#bell')){Snd.on=!Snd.on;store.set('tsb_snd',Snd.on?'1':'0');drawBell();if(Snd.on)Snd.play('notify')}});
+drawBell();
+
+/* ---------- completion feedback ---------- */
+function celebrate(title,sub,lots){
+  const box=document.createElement('div');box.className='celebrate';box.setAttribute('role','status');
+  let hex='';for(let i=0;i<16;i++){const ang=(i/16)*Math.PI*2+Math.random()*.3,dist=130+Math.random()*90;hex+='<i style="--x:'+Math.round(Math.cos(ang)*dist)+'px;--y:'+Math.round(Math.sin(ang)*dist)+'px;--d:'+(Math.random()*.15).toFixed(2)+'s;--s:'+(0.6+Math.random()*0.8).toFixed(2)+'"></i>'}
+  box.innerHTML='<div class="cel-card"><div class="cel-burst" aria-hidden="true">'+hex+'</div><svg class="cel-check" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="29"/><path d="M19 33l9 9 18-19"/></svg>'+
+    '<div class="cel-kicker">完成生產</div><div class="cel-title">'+esc(title)+'</div><div class="cel-sub">'+esc(sub)+'</div>'+(lots&&lots.length?'<div class="cel-lots">'+lots.map(l=>'<span>'+esc(l)+'</span>').join('')+'</div>':'')+'</div>';
+  document.body.appendChild(box);Snd.play('done');
+  const close=()=>{if(box.classList.contains('out'))return;box.classList.add('out');setTimeout(()=>box.remove(),320)};
+  box.addEventListener('click',close);setTimeout(close,2600);
+}
+function notifyBanner(lines){
+  let wrap=$('#notes');if(!wrap){wrap=document.createElement('div');wrap.id='notes';document.body.appendChild(wrap)}
+  lines.forEach(l=>{const n=document.createElement('div');n.className='note';n.setAttribute('role','status');
+    n.innerHTML='<span class="note-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg></span><div style="min-width:0"><b>已完成生產</b><div class="note-t">'+esc(l)+'</div></div><button type="button" aria-label="關閉通知">×</button>';
+    n.querySelector('button').onclick=()=>n.remove();wrap.prepend(n);setTimeout(()=>{n.classList.add('out');setTimeout(()=>n.remove(),400)},12000)});
+  Snd.play('notify');
+}
+function detectRemoteDone(done){
+  if(S.seen===null){S.seen=new Set(done.map(t=>t.id));return}
+  const fresh=done.filter(t=>!S.seen.has(t.id));fresh.forEach(t=>S.seen.add(t.id));
+  const others=fresh.filter(t=>!S.mine.has(t.id)&&!S.mine.has(t.parentId));
+  if(!others.length)return;
+  const groups={};others.forEach(t=>{const k=t.parentId&&others.some(o=>o.id===t.parentId)?t.parentId:t.id;(groups[k]=groups[k]||[]).push(t)});
+  notifyBanner(Object.values(groups).slice(0,4).map(g=>{const t=g[0],q=g.reduce((s,x)=>s+x.qty,0);
+    return t.customer+'｜'+t.productName+' ×'+num(q)+(t.unit?' '+t.unit:'')+'｜'+g.map(x=>x.lot).join('、')}));
+}
+
 /* ---------- api ---------- */
 async function api(method,url,body){
   const r=await fetch(url,{method,headers:{'Content-Type':'application/json','X-PIN':S.pin},body:body?JSON.stringify(body):undefined});
@@ -33,7 +78,8 @@ async function refresh(force){
   try{
     if(!force){const {rev}=await api('GET','/api/rev');if(rev===S.rev)return}
     const s=await api('GET','/api/state');
-    S.rev=s.rev;S.open=s.open;S.done=s.done;S.products=s.products;S.customers=s.customers||[];S.history=s.history||[];S.cfg=s.config;
+    detectRemoteDone(s.done);
+    S.rev=s.rev;S.open=s.open;S.done=s.done;S.products=s.products;S.recentLots=s.recentLots||{};S.customers=s.customers||[];S.history=s.history||[];S.cfg=s.config;
     setStatus('已連線，資料每 3 秒自動同步');
     if(!F)render();
   }catch(e){if(e.message!=='需要密碼')setStatus('連線中斷，正在重新連線…')}
@@ -64,6 +110,8 @@ function shipPill(t){const td=today();
   if(t.shipDate===addDays(td,1))return '<span class="pill p-tom">明日出貨</span>';
   return '<span class="pill p-later">'+esc(t.shipDate.slice(5).replace('-','/'))+' 出貨</span>'}
 function boardTasks(){const lim=addDays(today(),2);return S.open.filter(t=>t.shipDate<=lim).sort((a,b)=>(a.order||0)-(b.order||0))}
+function boxComps(pid){const p=S.products.find(x=>x.id===pid);return p&&(p.components||[]).length?p.components.map(id=>S.products.find(x=>x.id===id)).filter(Boolean):[]}
+function shortName(n){return String(n).replace(/^尋蜜趣[-－]/,'')}
 function catName(c){return (cfg().cats[c]||{}).name||c}
 function varName(c,v){return ((cfg().varieties||{})[c]||{})[v]||''}
 
@@ -88,8 +136,9 @@ function renderBoard(){
     '<div class="stat"><b class="mono">'+doneToday.length+'</b><span>今日已完成</span></div></div>';
   if(!list.length)h+='<div class="empty"><b>目前沒有待生產項目</b>三天內（含今日）要出貨的訂單會自動出現在這裡。到「訂單輸入」新增第一筆。</div>';
   else h+='<div class="list" id="blist">'+list.map((t,i)=>{
-    const code=t.cat?'<span class="pill p-code">'+esc(t.cat)+esc(t.variety||'')+' '+esc(catName(t.cat))+'</span>':'<span class="pill p-tom">未設類別</span>';
-    return '<div class="card'+(t.shipDate<td?' over':'')+'" data-id="'+t.id+'">'+
+    const bx=boxComps(t.productId);
+    const code=bx.length?'<span class="pill p-box">禮盒：'+esc(bx.map(p=>shortName(p.name)).join('＋'))+'</span>':t.cat?'<span class="pill p-code">'+esc(t.cat)+esc(t.variety||'')+' '+esc(catName(t.cat))+'</span>':'<span class="pill p-tom">未設類別</span>';
+    return '<div class="card'+(t.shipDate<td?' over u-today':t.shipDate===td?' u-today':t.shipDate===addDays(td,1)?' u-tom':'')+'" data-id="'+t.id+'">'+
       '<span class="grip" aria-label="拖曳排序" title="拖曳排序">⠿</span><span class="seq mono">'+(i+1)+'</span>'+
       '<div style="min-width:0;display:flex;flex-direction:column;gap:2px"><div class="cust"><span class="cust-tag">客戶</span>'+esc(t.customer)+'</div>'+
       '<div class="pname">'+esc(t.productName)+' <span class="mono">× '+qtyU(t)+'</span></div>'+
@@ -110,26 +159,31 @@ $('#v-board').addEventListener('click',e=>{const b=e.target.closest('[data-act="
 
 /* ---------- finish sheet ---------- */
 let F=null,F_unit='';
+const LETTERS='ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 function openFinish(id){
   const t=S.open.find(x=>x.id===id);if(!t)return;
   const pr=S.products.find(p=>p.id===t.productId)||{};const dc=t.cat||pr.cat||'',dv=t.variety||pr.variety||'';
-  F={t,defCat:dc,cat:dc,variety:dv,matDate:'',matArr:'',qty:String(t.qty),operator:store.get('tsb_op'),step:'date',err:'',preview:'',busy:false};
+  F={t,defCat:dc,cat:dc,variety:dv,matDate:'',matArr:'',arrSet:false,qty:String(t.qty),operator:store.get('tsb_op'),step:'date',err:'',pv:null,seq:'',seqTouched:false,showAll:false,busy:false,lots:[]};
   if(!(cfg().people||[]).includes(F.operator))F.operator='';
+  const bx=boxComps(t.productId);
+  if(bx.length){F.box=bx;F.cont={};bx.forEach(p=>{const r=(S.recentLots[p.id]||[])[0];F.cont[p.id]=r?{lot:r[0],date:r[1],manual:false}:{lot:'',date:today(),manual:true}});drawFinish();return}
   drawFinish();updatePreview();
 }
 function dvOf(t){const pr=S.products.find(p=>p.id===t.productId)||{};return t.variety||pr.variety||''}
 function rule(){return (cfg().cats[F.cat]||{}).rule||'month'}
-function ready(){if(!F.cat||!cfg().cats[F.cat])return false;return rule()==='material'?(F.matDate.length===4&&!!F.matArr):!!F.variety}
+function ready(){if(!F.cat||!cfg().cats[F.cat])return false;return rule()==='material'?(F.matDate.length===4&&F.arrSet):!!F.variety}
+function lotNow(){return F.pv&&F.seq?F.pv.prefix+'-'+F.seq:''}
 let pvT=null;
 function updatePreview(){
-  F.preview='';clearTimeout(pvT);if(!ready()){drawFinish();return}
+  F.pv=null;if(!F.seqTouched)F.seq='';clearTimeout(pvT);if(!ready()){drawFinish();return}
   const key=[F.cat,F.variety,F.matDate,F.matArr].join('|');
   pvT=setTimeout(async()=>{try{const r=await api('POST','/api/lot-preview',{cat:F.cat,variety:F.variety,matDate:F.matDate,matArr:F.matArr});
-    if(F&&[F.cat,F.variety,F.matDate,F.matArr].join('|')===key){F.preview=r.lot||'';F.err=r.lot?'':'這個批號的序號已用到 Z，請洽管理者';drawFinish()}}
+    if(F&&[F.cat,F.variety,F.matDate,F.matArr].join('|')===key){F.lots.forEach(l=>{if(l.lot.startsWith(r.prefix+'-')&&r.suggest&&l.seq>=r.suggest)r.suggest=l.seq<'Z'?String.fromCharCode(l.seq.charCodeAt(0)+1):null});F.pv=r;if(!F.seqTouched)F.seq=r.suggest||'';drawFinish()}}
     catch(e){if(F){F.err=e.message;drawFinish()}}},150);
 }
 function drawFinish(){
   if(!F)return;
+  if(F.box)return drawBox();
   const t=F.t,c=cfg(),y=yearCode(new Date().getFullYear()),people=c.people||[],isMat=rule()==='material';
   let h='<div class="scrim" id="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="完成生產">'+
    '<div style="display:flex;flex-direction:column;gap:4px"><div class="cust"><span class="cust-tag">客戶</span>'+esc(t.customer)+'</div><div class="pname">'+esc(t.productName)+' <span class="mono">× '+qtyU(t)+'</span></div><div class="meta">'+shipPill(t)+'</div>'+(t.note?'<div class="note-box">備註：'+esc(t.note)+'</div>':'')+'</div>';
@@ -137,59 +191,146 @@ function drawFinish(){
   h+='<div class="sec"><div class="lbl">產品類別</div><div class="chips">'+Object.keys(c.cats).map(k=>'<button class="chip" data-cat="'+esc(k)+'" aria-pressed="'+(F.cat===k)+'">'+esc(k)+' '+esc(c.cats[k].name)+'</button>').join('')+'</div>'+
    (!F.cat?'<div class="warn">這個品項還沒設定類別，請點選正確的類別（可到「設定」的品項主檔設定一次，以後就會自動帶入）。</div>':'')+
    (F.cat&&F.defCat&&F.cat!==F.defCat?'<div class="warn">這個品項預設是 '+esc(F.defCat)+' '+esc(catName(F.defCat))+'，你改成了 '+esc(F.cat)+' '+esc(catName(F.cat))+'。確認無誤再完成。</div>':'')+'</div>';
+  // lot header
   h+='<div class="sec"><div class="lbl">批號</div><div class="lot"><div class="seg"><b>'+y+'</b><small>年份</small></div><div class="seg"><b>'+esc(F.cat)+'</b><small>'+esc(catName(F.cat))+'</small></div>';
   if(isMat){const mat=(c.cats[F.cat]||{}).mat||'主原料';
     h+='<div class="seg man'+(F.step==='date'?' active':'')+'" data-step="date"><b>'+esc((F.matDate+'____').slice(0,4))+'</b><small>'+esc(mat)+'有效日</small></div>'+
-       '<div class="seg man'+(F.step==='arr'?' active':'')+'" data-step="arr"><b>'+esc(F.matArr||'_')+'</b><small>到貨次序</small></div>';
+       '<div class="seg man'+(F.step==='arr'?' active':'')+'" data-step="arr"><b>'+(F.arrSet?esc(F.matArr||'—'):'_')+'</b><small>到貨次序</small></div>';
   }else{
     h+='<div class="seg"><b>'+pad(new Date().getMonth()+1)+'</b><small>月份</small></div><div class="seg'+(F.variety?'':' man')+'"><b>'+esc(F.variety||'_')+'</b><small>'+esc(varName(F.cat,F.variety)||'品種')+'</small></div>';
   }
-  h+='<span class="dash">-</span><div class="seg"><b>'+(F.preview?esc(F.preview.slice(-1)):'?')+'</b><small>序號</small></div></div>';
+  h+='<span class="dash">-</span><div class="seg man'+(F.step==='seq'?' active':'')+'" data-step="seq"><b>'+(F.seq?esc(F.seq):'?')+'</b><small>批次序號</small></div></div>';
   if(!isMat){const vars=(c.varieties||{})[F.cat]||{};
     if(!F.variety||F.cat!==F.defCat||!vars[F.variety])h+='<div class="hint">選擇品種</div><div class="chips">'+Object.keys(vars).map(k=>'<button class="chip" data-var="'+esc(k)+'" aria-pressed="'+(F.variety===k)+'">'+esc(k)+' '+esc(vars[k])+'</button>').join('')+'</div>'}
-  if(isMat){const keys=F.step==='date'?['1','2','3','4','5','6','7','8','9','0']:['A','B','C','D','E','F','G','H','I','J'];
-    h+='<div class="hint">'+(F.step==='date'?'輸入'+esc((c.cats[F.cat]||{}).mat||'主原料')+'有效日期（月日 4 碼，例如 0913）':'點選這批原料是第幾次到貨（A＝第一次）')+'</div>'+
-      '<div class="kp">'+keys.map(k=>'<button data-key="'+k+'">'+k+'</button>').join('')+'</div><div class="row"><button data-key="del" style="flex:1">刪除一碼</button><button data-key="clr" style="flex:1">清除</button></div>'}
-  if(F.preview)h+='<div class="row" style="justify-content:space-between"><span class="hint">本批批號</span><span class="big-lot">'+esc(F.preview)+'</span></div>';
+  if(isMat&&F.step==='date'){
+    h+='<div class="hint">輸入'+esc((c.cats[F.cat]||{}).mat||'主原料')+'有效日期（月日 4 碼，例如 0913）</div>'+
+      '<div class="kp">'+['1','2','3','4','5','6','7','8','9','0'].map(k=>'<button data-key="'+k+'">'+k+'</button>').join('')+'</div><div class="row"><button data-key="del" style="flex:1">刪除一碼</button><button data-key="clr" style="flex:1">清除</button></div>'}
+  if(isMat&&F.step==='arr'){
+    h+='<div class="hint">這批原料是第幾次到貨？第一次到貨沒有字母，選「無」</div>'+
+      '<div class="kp"><button data-arr="" style="grid-column:span 2;font-size:18px;font-family:var(--f-body)"'+(F.arrSet&&!F.matArr?' aria-pressed="true"':'')+'>無（第一次）</button>'+['B','C','D','E','F','G','H','A'].map(k=>'<button data-arr="'+k+'">'+k+'</button>').join('')+'</div>'}
+  // serial
+  if(ready()&&F.pv){
+    const bs=F.pv.batches||[],sug=F.pv.suggest;
+    h+='<div class="hint" style="margin-top:4px">批次序號：同一鍋分裝給不同客戶或規格，請選「同一批」沿用同一個批號</div><div style="display:flex;flex-direction:column;gap:6px">';
+    if(sug)h+='<button class="chip seqopt" data-seq="'+sug+'" aria-pressed="'+(F.seq===sug)+'" style="justify-content:flex-start;text-align:left"><b class="mono" style="font-size:20px;margin-right:8px">'+esc(F.pv.prefix+'-'+sug)+'</b>新的一批</button>';
+    bs.forEach(b=>{h+='<button class="chip seqopt" data-seq="'+b.seq+'" aria-pressed="'+(F.seq===b.seq)+'" style="justify-content:flex-start;text-align:left;flex-wrap:wrap"><b class="mono" style="font-size:20px;margin-right:8px">'+esc(b.lot)+'</b>同一批（已做：'+esc(b.items.join('、'))+'）</button>'});
+    h+='</div><button type="button" data-showall="1" style="align-self:flex-start">'+(F.showAll?'收起':'其他序號（手動選 A–Z）')+'</button>';
+    if(F.showAll)h+='<div class="kp" style="grid-template-columns:repeat(7,minmax(0,1fr))">'+LETTERS.map(k=>'<button data-seq="'+k+'"'+(F.seq===k?' aria-pressed="true" style="background:var(--green);color:var(--green-ink)"':'')+'>'+k+'</button>').join('')+'</div>';
+  }
+  const lot=lotNow();
+  if(lot){const same=(F.pv.batches||[]).find(b=>b.seq===F.seq);
+    h+='<div class="row" style="justify-content:space-between"><span class="hint">'+(same?'本批批號（與先前同一批）':'本批批號')+'</span><span class="big-lot">'+esc(lot)+'</span></div>'}
   h+='</div>';
-  h+='<div class="sec"><label class="lbl" for="fqty">實際完成數量（少於訂單數量時，剩下的會留在看板上）</label><input id="fqty" class="mono" type="number" inputmode="numeric" min="1" max="'+t.qty+'" value="'+esc(F.qty)+'" style="font-size:22px"></div>';
+  const used=F.lots.reduce((s,l)=>s+l.qty,0),left=t.qty-used,cur=parseInt(F.qty,10)||0,tot=used+cur,u=t.unit?' '+t.unit:'';
+  h+='<div class="sec"><label class="lbl" for="fqty">'+(F.lots.length?'這個批號的數量':'這個批號的數量（一筆用到兩個批號時，先填第一批的數量，再按下面「＋ 再加一個批號」）')+'</label>'+
+    '<div class="row" style="flex-wrap:nowrap"><input id="fqty" class="mono" type="number" inputmode="numeric" min="1" max="'+left+'" value="'+esc(F.qty)+'" style="font-size:22px;flex:1"><span class="hint" style="white-space:nowrap">'+esc(t.unit||'')+'</span></div>'+
+    '<button type="button" id="faddlot" style="align-self:flex-start">＋ 再加一個批號</button></div>';
+  if(F.lots.length){
+    h+='<div class="sec"><div class="lbl">這筆訂單的批號</div><div style="display:flex;flex-direction:column;gap:6px">'+
+      F.lots.map((l,i)=>'<div class="row" style="justify-content:space-between;flex-wrap:nowrap;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 12px"><span class="mono" style="font-size:20px;font-weight:600">'+esc(l.lot)+'</span><span class="mono">× '+num(l.qty)+esc(u)+'</span><button type="button" data-dellot="'+i+'" aria-label="移除這個批號" style="min-height:40px;padding:4px 12px;color:var(--red)">✕</button></div>').join('')+
+      (lotNow()?'<div class="row" style="justify-content:space-between;flex-wrap:nowrap;border:2px dashed var(--gold);border-radius:10px;padding:8px 12px"><span class="mono" style="font-size:20px;font-weight:600">'+esc(lotNow())+'</span><span class="mono">× '+num(cur)+esc(u)+'</span><span class="hint">正在設定</span></div>':'')+
+      '</div></div>';
+  }
+  h+='<div class="hint" style="font-size:15px">合計 <b class="mono">'+num(tot)+'</b>'+esc(u)+' ／ 訂單 '+num(t.qty)+esc(u)+(tot<t.qty&&tot>0?'，剩 <b class="mono">'+num(t.qty-tot)+'</b>'+esc(u)+' 會留在看板':'')+(tot>t.qty?'　<span style="color:var(--red)">超過訂單數量</span>':'')+'</div>';
   h+='<div class="err">'+esc(F.err)+'</div><div class="row"><button id="fcancel" style="flex:1">取消</button><button id="fok" class="primary" style="flex:2;min-height:60px;font-size:18px"'+(F.busy?' disabled':'')+'>'+(F.busy?'儲存中…':'確認完成')+'</button></div></div></div>';
   const sc=$('#scrim')?$('.sheet').scrollTop:0;
   $('#modal').innerHTML=h;$('.sheet').scrollTop=sc;
 }
 function closeFinish(){F=null;$('#modal').innerHTML='';render(true)}
-$('#modal').addEventListener('input',e=>{if(F&&e.target.id==='fqty')F.qty=e.target.value});
+$('#modal').addEventListener('input',e=>{if(F&&e.target.id==='fqty'){F.qty=e.target.value;const pos=e.target.selectionStart;drawFinish();const n=$('#fqty');if(n){n.focus();try{n.setSelectionRange(pos,pos)}catch(_){}}}});
 $('#modal').addEventListener('click',e=>{
   if(!F)return;
   if(e.target.id==='scrim'||e.target.id==='fcancel')return closeFinish();
   const b=e.target.closest('button,[data-step]');if(!b)return;
   let changedLot=false;
-  if(b.dataset.op!==undefined){F.operator=b.dataset.op;store.set('tsb_op',F.operator)}
-  else if(b.dataset.cat){F.cat=b.dataset.cat;F.matDate='';F.matArr='';F.step='date';F.variety=F.cat===F.defCat?dvOf(F.t):'';changedLot=true}
-  else if(b.dataset.var){F.variety=b.dataset.var;changedLot=true}
-  else if(b.dataset.step){F.step=b.dataset.step}
-  else if(b.dataset.key){const k=b.dataset.key;changedLot=true;
-    if(k==='clr'){F.matDate='';F.matArr='';F.step='date'}
-    else if(k==='del'){if(F.step==='arr'&&F.matArr)F.matArr='';else{F.matDate=F.matDate.slice(0,-1);F.step='date'}}
-    else if(F.step==='date'){if(F.matDate.length<4)F.matDate+=k;if(F.matDate.length===4)F.step='arr'}
-    else F.matArr=k}
+  if(b.dataset.op!==undefined){F.operator=b.dataset.op;store.set('tsb_op',F.operator);Snd.play('tap')}
+  else if(b.dataset.clot){F.cont[b.dataset.clot]={lot:b.dataset.lot,date:b.dataset.date,manual:false};Snd.play('tap')}
+  else if(b.dataset.cman){const c=F.cont[b.dataset.cman];F.cont[b.dataset.cman]={lot:c.manual?c.lot:'',date:c.date||today(),manual:true}}
+  else if(b.dataset.cat){F.cat=b.dataset.cat;F.matDate='';F.matArr='';F.arrSet=false;F.step='date';F.seqTouched=false;F.variety=F.cat===F.defCat?dvOf(F.t):'';changedLot=true}
+  else if(b.dataset.var){F.variety=b.dataset.var;F.seqTouched=false;changedLot=true}
+  else if(b.dataset.step){if(b.dataset.step==='seq'){F.showAll=true}else F.step=b.dataset.step}
+  else if(b.dataset.arr!==undefined){F.matArr=b.dataset.arr;F.arrSet=true;F.step='seq';F.seqTouched=false;changedLot=true}
+  else if(b.dataset.seq){F.seq=b.dataset.seq;F.seqTouched=true}
+  else if(b.dataset.showall){F.showAll=!F.showAll}
+  else if(b.dataset.key){const k=b.dataset.key;changedLot=true;F.seqTouched=false;
+    if(k==='clr'){F.matDate='';F.matArr='';F.arrSet=false;F.step='date'}
+    else if(k==='del'){F.matDate=F.matDate.slice(0,-1);F.arrSet=false;F.matArr='';F.step='date'}
+    else if(F.matDate.length<4){F.matDate+=k;if(F.matDate.length===4)F.step='arr'}}
+  else if(b.id==='faddlot')return addLot();
+  else if(b.dataset.dellot!==undefined){F.lots.splice(+b.dataset.dellot,1)}
   else if(b.id==='fok')return finishConfirm();
-  F.err='';if(changedLot)updatePreview();else drawFinish();
+  F.err='';if(F.box)return drawBox();if(changedLot)updatePreview();else drawFinish();
 });
+function curLotErr(){
+  if(!F.cat)return '請先選擇產品類別';
+  if(rule()==='material'){if(F.matDate.length!==4)return '原料有效日期需要 4 碼';if(!F.arrSet)return '請點選到貨次序（第一次到貨選「無」）'}
+  else if(!F.variety)return '請選擇品種';
+  if(!F.seq||!F.pv)return '請選擇批次序號';
+  const q=parseInt(F.qty,10);if(!q||q<1)return '這個批號的數量要大於 0';
+  return '';
+}
+function curLot(){return {cat:F.cat,variety:F.variety,matDate:F.matDate,matArr:F.matArr,seq:F.seq,lot:lotNow(),qty:parseInt(F.qty,10)}}
+function addLot(){
+  const e=curLotErr();if(e){F.err=e;return drawFinish()}
+  Snd.play('add');
+  const used=F.lots.reduce((s,l)=>s+l.qty,0)+parseInt(F.qty,10);
+  if(used>=F.t.qty){F.err='數量已經等於訂單數量，不用再加批號';return drawFinish()}
+  F.lots.push(curLot());
+  F.qty=String(F.t.qty-used);F.seqTouched=false;F.showAll=false;F.err='';
+  if(rule()==='material')F.step='seq';
+  updatePreview();
+}
+function drawBox(){
+  const t=F.t,people=cfg().people||[];
+  let h='<div class="scrim" id="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="完成生產">'+
+   '<div style="display:flex;flex-direction:column;gap:4px"><div class="cust"><span class="cust-tag">客戶</span>'+esc(t.customer)+'</div><div class="pname">'+esc(t.productName)+' <span class="mono">× '+qtyU(t)+'</span></div><div class="meta">'+shipPill(t)+'<span class="pill p-box">禮盒不需要批號</span></div>'+(t.note?'<div class="note-box">備註：'+esc(t.note)+'</div>':'')+'</div>';
+  h+='<div class="sec"><div class="lbl">操作人</div><div class="chips">'+(people.length?people.map(n=>'<button class="chip" data-op="'+esc(n)+'" aria-pressed="'+(F.operator===n)+'">'+esc(n)+'</button>').join(''):'<span class="hint">還沒有人員名單，請到「設定」新增。</span>')+'</div></div>';
+  h+='<div class="sec"><div class="lbl">禮盒內容物：點選裝進去的那一批</div>';
+  F.box.forEach((p,i)=>{const c=F.cont[p.id],rec=S.recentLots[p.id]||[];
+    h+='<div class="comp"><div class="comp-h"><span class="comp-n">'+(i+1)+'</span><b>'+esc(shortName(p.name))+'</b>'+(c.lot?'<span class="mono comp-sel">'+esc(c.lot)+'</span>':'<span class="comp-sel need">尚未選擇</span>')+'</div>'+
+      '<div class="chips">'+rec.map(r=>'<button class="chip lotchip" data-clot="'+p.id+'" data-lot="'+esc(r[0])+'" data-date="'+esc(r[1])+'" aria-pressed="'+(!c.manual&&c.lot===r[0])+'"><b class="mono">'+esc(r[0])+'</b><small>'+esc(r[1].slice(5).replace('-','/'))+' 生產</small></button>').join('')+
+      '<button class="chip lotchip" data-cman="'+p.id+'" aria-pressed="'+c.manual+'"><b>其他批號</b><small>手動輸入</small></button></div>'+
+      (c.manual?'<div class="grid" style="margin-top:8px"><label class="f">批號<input class="mono c-lot" data-pid="'+p.id+'" value="'+esc(c.lot)+'" placeholder="HP103-A" autocapitalize="characters" autocomplete="off" style="font-size:20px;text-transform:uppercase"></label><label class="f">生產日期<input type="date" class="c-date" data-pid="'+p.id+'" value="'+esc(c.date)+'"></label></div>':'')+
+      '</div>'});
+  h+='</div>';
+  h+='<div class="sec"><label class="lbl" for="fqty">完成數量（少於訂單時，剩下的會留在看板）</label><div class="row" style="flex-wrap:nowrap"><input id="fqty" class="mono" type="number" inputmode="numeric" min="1" max="'+t.qty+'" value="'+esc(F.qty)+'" style="font-size:22px;flex:1"><span class="hint">'+esc(t.unit||'')+'</span></div></div>';
+  h+='<div class="err">'+esc(F.err)+'</div><div class="row"><button id="fcancel" style="flex:1">取消</button><button id="fok" class="primary" style="flex:2;min-height:60px;font-size:18px"'+(F.busy?' disabled':'')+'>'+(F.busy?'儲存中…':'確認完成')+'</button></div></div></div>';
+  const sc=$('#scrim')?$('.sheet').scrollTop:0;$('#modal').innerHTML=h;$('.sheet').scrollTop=sc;
+}
+$('#modal').addEventListener('input',e=>{if(!F||!F.box)return;const pid=e.target.dataset.pid;if(!pid)return;
+  if(e.target.classList.contains('c-lot'))F.cont[pid].lot=e.target.value.toUpperCase().replace(/\s/g,'');
+  if(e.target.classList.contains('c-date'))F.cont[pid].date=e.target.value});
+async function boxConfirm(){
+  const t=F.t,q=parseInt(F.qty,10),fail=m=>{F.err=m;drawBox()};
+  if(!F.operator)return fail('請先點選操作人');
+  for(const p of F.box){const c=F.cont[p.id];
+    if(!/^[A-Z0-9]+-[A-Z]$/.test(c.lot||''))return fail('請選擇「'+shortName(p.name)+'」的批號（格式例如 HP103-A）');
+    if(!c.date)return fail('請選擇「'+shortName(p.name)+'」的生產日期')}
+  if(!q||q<1||q>t.qty)return fail('數量需介於 1 到 '+t.qty);
+  F.busy=true;drawBox();
+  try{
+    const r=await api('POST','/api/tasks/'+t.id+'/finish',{operator:F.operator,qty:q,contents:F.box.map(p=>({productId:p.id,lot:F.cont[p.id].lot,date:F.cont[p.id].date}))});
+    S.mine.add(t.id);F=null;$('#modal').innerHTML='';
+    celebrate(t.customer,t.productName+' ×'+num(q)+(t.unit?' '+t.unit:'')+(r.rest>0?'（剩 '+num(r.rest)+' 留在看板）':''),(r.lots||[]).map(shortName));
+    await refresh(true);render(true);
+  }catch(e){if(F){F.busy=false;fail(e.message)}}
+}
+
 async function finishConfirm(){
+  if(F.box)return boxConfirm();
   const t=F.t,q=parseInt(F.qty,10);
   const fail=m=>{F.err=m;drawFinish()};
   if(!F.operator)return fail('請先點選操作人');
   if(!F.cat)return fail('請先選擇產品類別');
-  if(rule()==='material'){if(F.matDate.length!==4)return fail('原料有效日期需要 4 碼');if(!F.matArr)return fail('請點選到貨次序')}
-  else if(!F.variety)return fail('請選擇品種');
-  if(!q||q<1||q>t.qty)return fail('數量需介於 1 到 '+t.qty);
+  const ce=curLotErr();if(ce)return fail(ce);
+  const lots=F.lots.concat([curLot()]),tot=lots.reduce((s,l)=>s+l.qty,0);
+  if(tot>t.qty)return fail('各批號數量合計 '+tot+'，超過訂單的 '+t.qty);
   F.busy=true;drawFinish();
   try{
     F_unit=t.unit||'';
-    const r=await api('POST','/api/tasks/'+t.id+'/finish',{operator:F.operator,cat:F.cat,variety:F.variety,matDate:F.matDate,matArr:F.matArr,qty:q});
-    F=null;$('#modal').innerHTML='';
-    toast('已完成，批號 '+r.lot+(r.rest>0?'，剩 '+num(r.rest)+(F_unit?' '+F_unit:'')+' 留在看板':''));
+    const r=await api('POST','/api/tasks/'+t.id+'/finish',{operator:F.operator,lots:lots.map(l=>({cat:l.cat,variety:l.variety,matDate:l.matDate,matArr:l.matArr,seq:l.seq,qty:l.qty}))});
+    S.mine.add(t.id);F=null;$('#modal').innerHTML='';
+    celebrate(t.customer,t.productName+(r.rest>0?'（剩 '+num(r.rest)+(F_unit?' '+F_unit:'')+' 留在看板）':''),r.lots||[r.lot]);
     await refresh(true);render(true);
   }catch(e){if(F){F.busy=false;fail(e.message)}}
 }
@@ -303,13 +444,13 @@ $('#v-orders').addEventListener('click',async e=>{
 /* ---------- records ---------- */
 function renderRecords(){
   const v=$('#v-records'),q=S.q.trim().toLowerCase();
-  const rows=S.done.filter(t=>!q||[t.lot,t.customer,t.productName,t.operator,(t.matDate||'')+(t.matArr||'')].join(' ').toLowerCase().includes(q));
+  const rows=S.done.filter(t=>!q||[t.lot,t.customer,t.productName,t.operator,(t.matDate||'')+(t.matArr||''),(t.contents||[]).map(c=>c.lot+' '+c.name).join(' ')].join(' ').toLowerCase().includes(q));
   let h='<div class="row" style="margin-bottom:12px"><input id="rq" placeholder="搜尋批號、客戶、品項、原料批（例：0913B）" value="'+esc(S.q)+'" style="flex:1;min-width:220px">'+
     '<a class="btnlink" href="/api/export.csv'+(S.pin?'?pin='+encodeURIComponent(S.pin):'')+'">匯出 Excel（CSV）</a></div>';
   if(!S.done.length)h+='<div class="empty"><b>還沒有生產紀錄</b>在看板上按「完成生產」後，紀錄會出現在這裡，可以用批號回查。</div>';
   else h+='<p class="hint">共 '+rows.length+' 筆</p><div class="tbl-wrap"><table><thead><tr><th>完成時間</th><th>批號</th><th>品項</th><th>數量</th><th>客戶</th><th>出貨日</th><th>操作人</th><th></th></tr></thead><tbody>'+rows.map(t=>
-   '<tr><td class="mono">'+fmtTime(t.completedAt)+'</td><td class="mono" style="font-weight:600">'+esc(t.lot)+(t.lotHistory&&t.lotHistory.length?'<div class="hint">曾修改 '+t.lotHistory.length+' 次</div>':'')+'</td><td>'+esc(t.productName)+'</td><td class="mono">'+qtyU(t)+(t.orderedQty&&t.orderedQty!==t.qty?'<div class="hint">訂單 '+num(t.orderedQty)+'</div>':'')+'</td><td>'+esc(t.customer)+'</td><td class="mono">'+esc(t.shipDate)+'</td><td>'+esc(t.operator)+'</td>'+
-   '<td><button data-rlot="'+t.id+'">改批號</button></td></tr>').join('')+'</tbody></table></div>';
+   '<tr><td class="mono">'+fmtTime(t.completedAt)+'</td><td class="mono" style="font-weight:600">'+(t.contents?t.contents.map(c=>'<div>'+esc(c.lot)+' <span class="hint" style="font-family:var(--f-body);font-weight:400">'+esc(shortName(c.name))+'　'+esc(c.date.slice(5).replace('-','/'))+'</span></div>').join(''):esc(t.lot))+(t.lotHistory&&t.lotHistory.length?'<div class="hint">曾修改 '+t.lotHistory.length+' 次</div>':'')+'</td><td>'+esc(t.productName)+'</td><td class="mono">'+qtyU(t)+(t.orderedQty&&t.orderedQty!==t.qty?'<div class="hint">訂單 '+num(t.orderedQty)+'</div>':'')+'</td><td>'+esc(t.customer)+'</td><td class="mono">'+esc(t.shipDate)+'</td><td>'+esc(t.operator)+'</td>'+
+   '<td>'+(t.contents?'<span class="pill p-box">禮盒</span>':'<button data-rlot="'+t.id+'">改批號</button>')+'</td></tr>').join('')+'</tbody></table></div>';
   v.innerHTML=h;
 }
 $('#v-records').addEventListener('input',e=>{if(e.target.id==='rq'){S.q=e.target.value;const pos=e.target.selectionStart;renderRecords();const n=$('#rq');n.focus();n.setSelectionRange(pos,pos)}});
@@ -344,12 +485,15 @@ function renderSettings(){
   if(S.products.length){
     h+='<div class="row" style="margin-top:12px"><input id="s-pq" placeholder="搜尋品號或品名" value="'+esc(S.pq)+'" style="flex:1;min-width:180px"><button id="s-pmiss" aria-pressed="'+S.pOnlyMissing+'" class="chip">只看未設類別'+(missing?'（'+missing+'）':'')+'</button></div>';
     if(missing)h+='<p class="warn">有 '+missing+' 個品項還沒設定類別。設定後，看板完成生產時就會自動帶出正確的批號規則。</p>';
-    h+='<div class="tbl-wrap" style="margin-top:8px"><table><thead><tr><th>品號</th><th>品名／規格</th><th>類別</th><th>品種</th><th></th></tr></thead><tbody>'+prods.map(p=>{
+    h+='<div class="tbl-wrap" style="margin-top:8px"><table><thead><tr><th>品號</th><th>品名／規格</th><th>類別</th><th>品種</th><th>禮盒內容物</th><th></th></tr></thead><tbody>'+prods.map(p=>{
       const vv=(c.varieties||{})[p.cat]||{},isMat=(c.cats[p.cat]||{}).rule==='material';
+      const comps=boxComps(p.id);
+      if(comps.length)return '<tr'+(p.active===false?' class="dim"':'')+'><td class="mono">'+esc(p.code||'')+'</td><td>'+esc(p.name)+'</td><td colspan="2"><span class="pill p-box">禮盒，不需批號</span></td>'+
+        '<td>'+esc(comps.map(x=>shortName(x.name)).join('＋'))+' <button data-pbox="'+p.id+'">編輯</button></td><td><button data-ptoggle="'+p.id+'">'+(p.active===false?'恢復':'停用')+'</button></td></tr>';
       return '<tr'+(p.active===false?' class="dim"':'')+' data-pid="'+p.id+'"><td class="mono">'+esc(p.code||'')+'</td><td>'+esc(p.name)+'</td>'+
        '<td><select class="pcat" aria-label="類別"><option value="">未設定</option>'+Object.keys(c.cats).map(k=>'<option value="'+esc(k)+'"'+(p.cat===k?' selected':'')+'>'+esc(k)+' '+esc(c.cats[k].name)+'</option>').join('')+'</select></td>'+
        '<td>'+(!p.cat?'':isMat?'<span class="hint">不需要</span>':'<select class="pvar" aria-label="品種"><option value="">選擇</option>'+Object.keys(vv).map(k=>'<option value="'+esc(k)+'"'+(p.variety===k?' selected':'')+'>'+esc(k)+' '+esc(vv[k])+'</option>').join('')+'</select>')+'</td>'+
-       '<td><button data-ptoggle="'+p.id+'">'+(p.active===false?'恢復':'停用')+'</button></td></tr>'}).join('')+'</tbody></table></div>';
+       '<td><button data-pbox="'+p.id+'"'+(/禮盒|組/.test(p.name)?'':' class="quiet"')+'>設為禮盒</button></td><td><button data-ptoggle="'+p.id+'">'+(p.active===false?'恢復':'停用')+'</button></td></tr>'}).join('')+'</tbody></table></div>';
   }
   h+='<h2>類別與品種代碼</h2><div class="tbl-wrap"><table><thead><tr><th>類別</th><th>名稱</th><th>批號規則</th><th>品種代碼</th></tr></thead><tbody>'+Object.keys(c.cats).map(k=>{const vv=(c.varieties||{})[k]||{};
    return '<tr><td class="mono" style="font-weight:600">'+esc(k)+'</td><td>'+esc(c.cats[k].name)+'</td><td>'+(c.cats[k].rule==='material'?'原料批型（看'+esc(c.cats[k].mat||'主原料')+'有效日）':'月份型')+'</td><td>'+(Object.keys(vv).map(n=>esc(n)+' '+esc(vv[n])).join('、')||'<span class="hint">無</span>')+'</td></tr>'}).join('')+'</tbody></table></div>'+
@@ -396,6 +540,7 @@ $('#v-settings').addEventListener('click',async e=>{
   const b=e.target.closest('button');if(!b)return;const c=JSON.parse(JSON.stringify(cfg()));c.people=c.people||[];c.varieties=c.varieties||{};
   const saveCfg=msg=>act(()=>api('PUT','/api/config',c),msg);
   if(b.id==='s-impgo'){b.focus();return runImport()}
+  if(b.dataset.pbox){return openBoxEditor(+b.dataset.pbox)}
   if(b.id==='s-pmiss'){S.pOnlyMissing=!S.pOnlyMissing;return renderSettings()}
   if(b.id==='s-addp'){const n=$('#s-person').value.trim();if(!n)return;if(c.people.includes(n))return toast(n+' 已在名單中');c.people.push(n);b.focus();await saveCfg('已新增 '+n)}
   else if(b.dataset.delp!==undefined){if(b.dataset.armed!=='1'){b.dataset.armed='1';b.textContent='再按一次移除';return}c.people.splice(+b.dataset.delp,1);await saveCfg('已移除')}
@@ -418,4 +563,24 @@ $('#v-settings').addEventListener('click',async e=>{
 S.pin=store.get('tsb_pin');
 fetch('/api/auth-required').then(r=>r.json()).then(r=>{if(r.required&&!S.pin)showPin();else startPolling()}).catch(()=>startPolling());
 render(true);
+/* ---------- gift box editor ---------- */
+let BX=null;
+function openBoxEditor(id){const p=S.products.find(x=>x.id===id);if(!p)return;BX={p,ids:(p.components||[]).slice()};drawBoxEditor()}
+function drawBoxEditor(){
+  const opts=S.products.filter(x=>x.id!==BX.p.id&&!(x.components||[]).length&&x.active!==false&&!BX.ids.includes(x.id)&&x.cat);
+  $('#modal').innerHTML='<div class="scrim" id="bxscrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="禮盒內容物"><div class="pname">'+esc(BX.p.name)+'</div>'+
+   '<p class="hint" style="margin:0">設定這個禮盒裝了哪些產品。完成生產時，禮盒本身不給批號，改為每個內容物點選它的批號與生產日期。全部移除就變回一般品項。</p>'+
+   '<div style="display:flex;flex-direction:column;gap:6px">'+(BX.ids.length?BX.ids.map((id,i)=>{const x=S.products.find(p=>p.id===id)||{name:'?'};return '<div class="row" style="justify-content:space-between;flex-wrap:nowrap;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 12px"><span style="min-width:0"><span class="mono hint">'+esc(x.code||'')+'</span> '+esc(x.name)+'</span><button type="button" data-bxdel="'+i+'" aria-label="移除" style="min-height:40px;padding:4px 12px;color:var(--red)">✕</button></div>'}).join(''):'<div class="hint">還沒有內容物</div>')+'</div>'+
+   '<div class="row" style="flex-wrap:nowrap"><select id="bxadd" style="flex:1;min-width:0"><option value="">選擇要加入的內容物</option>'+opts.map(x=>'<option value="'+x.id+'">'+esc((x.code?x.code+'　':'')+x.name)+'</option>').join('')+'</select><button type="button" id="bxaddgo">加入</button></div>'+
+   '<div class="err" id="bxerr"></div><div class="row"><button type="button" id="bxcancel" style="flex:1">取消</button><button type="button" id="bxsave" class="primary" style="flex:2">儲存</button></div></div></div>';
+}
+$('#modal').addEventListener('click',async e=>{
+  if(!BX)return;const b=e.target.closest('button');
+  if(e.target.id==='bxscrim'||(b&&b.id==='bxcancel')){BX=null;$('#modal').innerHTML='';return render(true)}
+  if(!b)return;
+  if(b.id==='bxaddgo'){const v=+$('#bxadd').value;if(v){BX.ids.push(v);drawBoxEditor()}}
+  else if(b.dataset.bxdel!==undefined){BX.ids.splice(+b.dataset.bxdel,1);drawBoxEditor()}
+  else if(b.id==='bxsave'){try{await api('PUT','/api/products/'+BX.p.id+'/components',{ids:BX.ids});BX=null;$('#modal').innerHTML='';toast('禮盒內容物已儲存');await refresh(true);render(true)}catch(err){$('#bxerr').textContent=err.message}}
+});
+
 })();

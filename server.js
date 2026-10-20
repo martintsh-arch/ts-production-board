@@ -85,6 +85,8 @@ async function migrate() {
   `);
   await pool.query(`
     ALTER TABLE products ADD COLUMN IF NOT EXISTS code TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS components JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS contents JSONB;
     CREATE UNIQUE INDEX IF NOT EXISTS products_code_idx ON products(code);
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS unit TEXT NOT NULL DEFAULT '';
     CREATE TABLE IF NOT EXISTS customers (
@@ -117,6 +119,7 @@ function taipeiParts(d = new Date()) {
   const [y, m, day] = f.format(d).split('-');
   return { y: +y, m, d: day };
 }
+function taipeiDate(d) { const t = taipeiParts(new Date(d)); return t.y + '-' + t.m + '-' + t.d; }
 const yearCode = (y) => String.fromCharCode(65 + (y - 2019)); // 2026 = H
 const str = (v, max = 200) => String(v == null ? '' : v).trim().slice(0, max);
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
@@ -127,7 +130,7 @@ function rowTask(r) {
     cat: r.cat, variety: r.variety, qty: r.qty, orderedQty: r.ordered_qty, shipDate: r.ship_date,
     note: r.note, status: r.status, order: r.sort_order, lot: r.lot,
     completedAt: r.completed_at, operator: r.operator, matDate: r.mat_date, matArr: r.mat_arr,
-    unit: r.unit || '', parentId: r.parent_id, lotHistory: r.lot_history, createdAt: r.created_at,
+    unit: r.unit || '', contents: r.contents || null, parentId: r.parent_id, lotHistory: r.lot_history, createdAt: r.created_at,
   };
 }
 async function getConfig(client) {
@@ -164,7 +167,7 @@ app.get('/api/rev', wrap(async (req, res) => {
 }));
 
 app.get('/api/state', wrap(async (req, res) => {
-  const [rev, open, done, products, config, customers, history] = await Promise.all([
+  const [rev, open, done, products, config, customers, history, recent] = await Promise.all([
     pool.query(`SELECT value FROM meta WHERE key = 'rev'`),
     pool.query(`SELECT * FROM tasks WHERE status = 'open' ORDER BY sort_order, id`),
     pool.query(`SELECT * FROM tasks WHERE status = 'done' ORDER BY completed_at DESC LIMIT 2000`),
@@ -172,7 +175,15 @@ app.get('/api/state', wrap(async (req, res) => {
     getConfig(),
     pool.query(`SELECT id, name, code FROM customers ORDER BY name`),
     pool.query(`SELECT customer, product_id, times FROM customer_products ORDER BY times DESC, last_at DESC`),
+    pool.query(`SELECT product_id, lot, MAX(completed_at) AS at FROM tasks
+                WHERE status='done' AND lot ~ '^[A-Z0-9]+-[A-Z]$' AND completed_at > now() - interval '400 days'
+                GROUP BY product_id, lot ORDER BY at DESC`),
   ]);
+  const recentLots = {};
+  recent.rows.forEach((r) => {
+    const a = recentLots[r.product_id] = recentLots[r.product_id] || [];
+    if (a.length < 8) a.push([r.lot, taipeiDate(r.at)]);
+  });
   res.json({
     rev: Number(rev.rows[0].value),
     open: open.rows.map(rowTask),
@@ -180,6 +191,7 @@ app.get('/api/state', wrap(async (req, res) => {
     products: products.rows,
     customers: customers.rows,
     history: history.rows.map((h) => [h.customer, h.product_id, h.times]),
+    recentLots,
     config,
     now: taipeiParts(),
   });
@@ -303,8 +315,8 @@ function lotPrefix(cfg, { cat, variety, matDate, matArr }) {
     if (!/^\d{4}$/.test(matDate || '')) throw new UserError('原料有效日期需要 4 碼');
     const mm = +matDate.slice(0, 2), dd = +matDate.slice(2);
     if (mm < 1 || mm > 12 || dd < 1 || dd > 31) throw new UserError(matDate + ' 不是有效日期');
-    if (!/^[A-Z]$/.test(matArr || '')) throw new UserError('請點選到貨次序');
-    return y + cat + matDate + matArr;
+    if (matArr && !/^[A-Z]$/.test(matArr)) throw new UserError('到貨次序只能是英文字母');
+    return y + cat + matDate + (matArr || '');
   }
   const vars = (cfg.varieties || {})[cat] || {};
   if (!variety || !vars[variety]) throw new UserError('請選擇品種');
@@ -324,46 +336,118 @@ app.post('/api/lot-preview', wrap(async (req, res) => {
   const b = req.body || {};
   const prefix = lotPrefix(cfg, { cat: str(b.cat, 2), variety: str(b.variety, 2), matDate: str(b.matDate, 4), matArr: str(b.matArr, 1) });
   const n = await nextSeq(pool, prefix);
-  res.json({ lot: n < 26 ? prefix + '-' + String.fromCharCode(65 + n) : null, prefix });
+  const { rows } = await pool.query(
+    `SELECT lot, product_name, customer, qty, unit, completed_at FROM tasks
+     WHERE status='done' AND lot LIKE $1 ORDER BY completed_at DESC LIMIT 60`, [prefix + '-%']);
+  const re = new RegExp('^' + prefix + '-([A-Z])$');
+  const batches = {};
+  rows.forEach((r) => {
+    const m = re.exec(r.lot || ''); if (!m) return;
+    const b = batches[m[1]] = batches[m[1]] || { seq: m[1], lot: r.lot, last: r.completed_at, items: [] };
+    if (b.items.length < 4) b.items.push(r.customer + ' ' + r.product_name + ' ×' + r.qty + (r.unit ? ' ' + r.unit : ''));
+  });
+  res.json({
+    prefix,
+    suggest: n < 26 ? String.fromCharCode(65 + n) : null,
+    lot: n < 26 ? prefix + '-' + String.fromCharCode(65 + n) : null,
+    batches: Object.values(batches).sort((a, b) => b.seq.localeCompare(a.seq)).slice(0, 6),
+  });
 }));
 
 app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
   const b = req.body || {};
   const operator = str(b.operator, 50);
   if (!operator) throw new UserError('請先點選操作人');
-  const input = { cat: str(b.cat, 2), variety: str(b.variety, 2), matDate: str(b.matDate, 4), matArr: str(b.matArr, 1) };
+  // one or more lots; each {cat, variety, matDate, matArr, seq, qty}
+  const raw = Array.isArray(b.lots) && b.lots.length ? b.lots : [b];
+  if (raw.length > 10) throw new UserError('一筆最多 10 個批號');
+  const parts = raw.map((l) => ({
+    cat: str(l.cat, 2), variety: str(l.variety, 2), matDate: str(l.matDate, 4), matArr: str(l.matArr, 1),
+    seq: str(l.seq, 1).toUpperCase(), qty: parseInt(l.qty, 10),
+  }));
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const { rows } = await client.query(`SELECT * FROM tasks WHERE id=$1 FOR UPDATE`, [req.params.id]);
     const t = rows[0];
     if (!t || t.status !== 'open') throw new UserError('這筆已經完成或取消了，請重新整理');
-    const qty = parseInt(b.qty, 10);
-    if (!qty || qty < 1 || qty > t.qty) throw new UserError('數量需介於 1 到 ' + t.qty);
+    const { rows: pr } = await client.query('SELECT * FROM products WHERE id=$1', [t.product_id]);
+    const comps = (pr[0] && pr[0].components) || [];
+    if (comps.length) {
+      // gift box: no lot of its own, record each content's lot and date
+      const qty = parseInt(b.qty, 10);
+      if (!qty || qty < 1 || qty > t.qty) throw new UserError('數量需介於 1 到 ' + t.qty);
+      const given = Array.isArray(b.contents) ? b.contents : [];
+      const { rows: cp } = await client.query('SELECT id, name, code FROM products WHERE id = ANY($1::int[])', [comps]);
+      const contents = comps.map((cid) => {
+        const p = cp.find((x) => x.id === cid) || { id: cid, name: '品項 ' + cid };
+        const g = given.find((x) => +x.productId === cid) || {};
+        const lot = str(g.lot, 30).toUpperCase();
+        const date = str(g.date, 10);
+        if (!/^[A-Z0-9]+-[A-Z]$/.test(lot)) throw new UserError('請選擇「' + p.name + '」的批號');
+        if (!isDate(date)) throw new UserError('請選擇「' + p.name + '」的生產日期');
+        return { productId: cid, code: p.code || '', name: p.name, lot, date };
+      });
+      const lotText = contents.map((c) => c.lot).join('／');
+      await client.query(
+        `UPDATE tasks SET status='done', lot=$1, contents=$2, completed_at=now(), operator=$3,
+           qty=$4, ordered_qty=COALESCE(ordered_qty, qty) WHERE id=$5`,
+        [lotText, JSON.stringify(contents), operator, qty, t.id]);
+      const rest = t.qty - qty;
+      if (rest > 0) {
+        await client.query(
+          `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, sort_order, parent_id, unit)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']);
+      }
+      await bump(client);
+      await client.query('COMMIT');
+      return res.json({ lot: lotText, lots: contents.map((c) => c.name + ' ' + c.lot), rest, box: true });
+    }
+    const total = parts.reduce((a, p) => a + (p.qty || 0), 0);
+    if (parts.some((p) => !p.qty || p.qty < 1)) throw new UserError('每個批號的數量都要大於 0');
+    if (total > t.qty) throw new UserError('各批號數量合計 ' + total + '，超過訂單的 ' + t.qty);
     const cfg = await getConfig(client);
-    const prefix = lotPrefix(cfg, input);
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [prefix]);
-    const n = await nextSeq(client, prefix);
-    if (n > 25) throw new UserError('這個批號的序號已用到 Z，請洽管理者');
-    const lot = prefix + '-' + String.fromCharCode(65 + n);
-    const isMat = cfg.cats[input.cat].rule === 'material';
-    await client.query(
-      `UPDATE tasks SET status='done', lot=$1, completed_at=now(), operator=$2, cat=$3, variety=$4,
-         qty=$5, ordered_qty=COALESCE(ordered_qty, qty), mat_date=$6, mat_arr=$7 WHERE id=$8`,
-      [lot, operator, input.cat, isMat ? t.variety : input.variety, qty,
-        isMat ? input.matDate : null, isMat ? input.matArr : null, t.id]
-    );
-    const rest = t.qty - qty;
+    const done = [];
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i], tag = parts.length > 1 ? '第 ' + (i + 1) + ' 個批號：' : '';
+      let prefix;
+      try { prefix = lotPrefix(cfg, p); } catch (e) { if (e instanceof UserError) throw new UserError(tag + e.message); throw e; }
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [prefix]);
+      let seq = p.seq;
+      if (seq && !/^[A-Z]$/.test(seq)) throw new UserError(tag + '批次序號只能是 A 到 Z');
+      if (!seq) {
+        const n = await nextSeq(client, prefix);
+        if (n > 25) throw new UserError(tag + '這個批號的序號已用到 Z，請手動選擇序號');
+        seq = String.fromCharCode(65 + n);
+      }
+      const isMat = cfg.cats[p.cat].rule === 'material';
+      const lot = prefix + '-' + seq;
+      const vals = [lot, operator, p.cat, isMat ? t.variety : p.variety, p.qty, isMat ? p.matDate : null, isMat ? (p.matArr || '') : null];
+      if (i === 0) {
+        await client.query(
+          `UPDATE tasks SET status='done', lot=$1, completed_at=now(), operator=$2, cat=$3, variety=$4,
+             qty=$5, ordered_qty=COALESCE(ordered_qty, qty), mat_date=$6, mat_arr=$7 WHERE id=$8`, [...vals, t.id]);
+      } else {
+        await client.query(
+          `INSERT INTO tasks (customer, product_id, product_name, ship_date, note, unit, sort_order, parent_id, ordered_qty, status,
+             lot, completed_at, operator, cat, variety, qty, mat_date, mat_arr)
+           VALUES ($8,$9,$10,$11,$12,$13,$14,$15,$16,'done',$1,now(),$2,$3,$4,$5,$6,$7)`,
+          [...vals, t.customer, t.product_id, t.product_name, t.ship_date, t.note, t.unit || '', t.sort_order, t.id, t.ordered_qty || t.qty]);
+      }
+      done.push(lot + ' ×' + p.qty);
+    }
+    const rest = t.qty - total;
     if (rest > 0) {
       await client.query(
         `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, sort_order, parent_id, unit)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-        [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']
+        [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']
       );
     }
     await bump(client);
     await client.query('COMMIT');
-    res.json({ lot, rest });
+    res.json({ lot: done.map((d) => d.split(' ×')[0]).join('、'), lots: done, rest });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
@@ -377,8 +461,6 @@ app.post('/api/tasks/:id/lot', wrap(async (req, res) => {
     const t = rows[0];
     if (!t) throw new UserError('找不到這筆紀錄');
     if (t.lot !== lot) {
-      const dup = await client.query(`SELECT 1 FROM tasks WHERE lot=$1 AND id<>$2 AND status='done'`, [lot, t.id]);
-      if (dup.rowCount) throw new UserError(lot + ' 已經有人用過，請確認');
       const hist = (t.lot_history || []).concat([{ at: new Date().toISOString(), from: t.lot, to: lot }]);
       await client.query(`UPDATE tasks SET lot=$1, lot_history=$2 WHERE id=$3`, [lot, JSON.stringify(hist), t.id]);
       await bump(client);
@@ -423,6 +505,20 @@ app.put('/api/products/:id', wrap(async (req, res) => {
   await bump();
   res.json({ ok: true });
 }));
+app.put('/api/products/:id/components', wrap(async (req, res) => {
+  const ids = (Array.isArray(req.body && req.body.ids) ? req.body.ids : []).map((x) => parseInt(x, 10)).filter(Boolean);
+  const id = parseInt(req.params.id, 10);
+  if (ids.includes(id)) throw new UserError('禮盒不能把自己當內容物');
+  if (ids.length > 12) throw new UserError('內容物最多 12 項');
+  if (ids.length) {
+    const { rows } = await pool.query('SELECT id, components FROM products WHERE id = ANY($1::int[])', [ids]);
+    if (rows.length !== new Set(ids).size) throw new UserError('找不到部分內容物品項');
+    if (rows.some((r) => (r.components || []).length)) throw new UserError('內容物不能是另一個禮盒');
+  }
+  await pool.query('UPDATE products SET components=$1 WHERE id=$2', [JSON.stringify(ids), id]);
+  await bump();
+  res.json({ ok: true });
+}));
 app.post('/api/products/:id/toggle', wrap(async (req, res) => {
   await pool.query(`UPDATE products SET active = NOT active WHERE id=$1`, [req.params.id]);
   await bump();
@@ -441,6 +537,7 @@ app.put('/api/customers/:id', wrap(async (req, res) => {
 const NOT_PRODUCED = /空桶|塑膠桶|運費|油瓶|花粉|蜂王|蜂蠟|花露/;
 function classify(name) {
   if (NOT_PRODUCED.test(name)) return { cat: '', variety: '', inactive: true };
+  if (/禮盒/.test(name)) return { cat: '', variety: '' };
   if (/糖漿/.test(name)) return { cat: 'S', variety: '' };
   if (/果樂茶/.test(name)) {
     const v = /檸檬/.test(name) ? '1' : /百香果|葡萄柚/.test(name) ? '2' : /芒果|柳橙|草莓/.test(name) ? '3' : /蜜桃|荔枝/.test(name) ? '4' : '';
@@ -450,6 +547,12 @@ function classify(name) {
   if (/苦茶油/.test(name)) return { cat: 'O', variety: '1' };
   if (/調和蜂蜜/.test(name)) return { cat: 'M', variety: '1' };
   if (/泰國/.test(name)) return { cat: 'P', variety: '2' };
+  if (/琥珀/.test(name) && /龍眼/.test(name)) return { cat: 'P', variety: '2' };
+  if (/嚴選龍眼/.test(name)) {
+    const kg = (name.match(/([\d.]+)\s*公斤/) || [])[1];
+    if (kg && parseFloat(kg) >= 1.2) return { cat: 'P', variety: '2' };
+  }
+  if (/黃金/.test(name) && /蜜/.test(name)) return { cat: 'P', variety: '3' };
   if (/龍眼|琥珀/.test(name)) return { cat: 'P', variety: '1' };
   if (/荔枝/.test(name)) return { cat: 'P', variety: '3' };
   if (/百花/.test(name)) return { cat: 'P', variety: '4' };
@@ -533,10 +636,10 @@ app.put('/api/config', wrap(async (req, res) => {
 app.get('/api/export.csv', wrap(async (req, res) => {
   const cfg = await getConfig();
   const { rows } = await pool.query(`SELECT * FROM tasks WHERE status='done' ORDER BY completed_at DESC`);
-  const head = ['完成時間', '批號', '類別', '品項', '完成數量', '訂單數量', '單位', '客戶', '出貨日', '操作人', '原料有效日', '到貨次序', '備註'];
+  const head = ['完成時間', '批號', '類別', '品項', '完成數量', '訂單數量', '單位', '客戶', '出貨日', '操作人', '原料有效日', '到貨次序', '禮盒內容物批號', '備註'];
   const fmt = (d) => d ? new Date(d).toLocaleString('zh-TW', { timeZone: TZ, hour12: false }) : '';
-  const lines = [head].concat(rows.map((t) => [fmt(t.completed_at), t.lot, (cfg.cats[t.cat] || {}).name || t.cat,
-    t.product_name, t.qty, t.ordered_qty || t.qty, t.unit || '', t.customer, t.ship_date, t.operator, t.mat_date || '', t.mat_arr || '', t.note || '']));
+  const lines = [head].concat(rows.map((t) => [fmt(t.completed_at), t.lot, t.contents ? '禮盒' : ((cfg.cats[t.cat] || {}).name || t.cat),
+    t.product_name, t.qty, t.ordered_qty || t.qty, t.unit || '', t.customer, t.ship_date, t.operator, t.mat_date || '', t.mat_arr || '', (t.contents || []).map((c) => c.name + ' ' + c.lot + '（' + c.date + '）').join('；'), t.note || '']));
   const csv = '﻿' + lines.map((r) => r.map((c) => '"' + String(c == null ? '' : c).replace(/"/g, '""') + '"').join(',')).join('\r\n');
   const name = '生產紀錄_' + Object.values(taipeiParts()).join('') + '.csv';
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
