@@ -26,16 +26,19 @@ const DEFAULT_CONFIG = {
   cats: {
     S: { name: '糖漿', rule: 'material', mat: '果糖' },
     P: { name: '純蜜', rule: 'month' },
-    J: { name: '果樂茶', rule: 'month' },
+    J: { name: '果樂茶', rule: 'month', auto: true },
     O: { name: '油品', rule: 'month' },
     V: { name: '蜂蜜醋', rule: 'month' },
+    R: { name: '玫瑰蜜露', rule: 'month', auto: true },
   },
   varieties: {
     P: { 1: '台灣龍眼蜜', 2: '泰國龍眼蜜', 3: '荔枝蜜', 4: '百花蜜' },
     J: { 1: '檸檬', 2: '百香果與紅葡萄柚', 3: '芒果柳橙與草莓', 4: '蜜桃與荔枝' },
     O: { 1: '苦茶油', 2: '芥花苦茶油' },
     V: { 1: '鳳梨', 2: '白柚' },
+    R: { 1: '玫瑰蜜露' },
   },
+  lotModeV: 1,
 };
 
 /* ---------- schema ---------- */
@@ -108,6 +111,20 @@ async function migrate() {
     [JSON.stringify(DEFAULT_CONFIG)]
   );
   await pool.query(`INSERT INTO meta (key, value) VALUES ('rev', 1) ON CONFLICT (key) DO NOTHING`);
+  // v2 lot mode: manual lot entry by default; 果樂茶 J and 玫瑰蜜露 R are locked to system-generated lots
+  const cfg = await getConfig();
+  if (!cfg.lotModeV) {
+    cfg.lotModeV = 1;
+    if (cfg.cats.J) cfg.cats.J.auto = true;
+    if (!cfg.cats.R) cfg.cats.R = { name: '玫瑰蜜露', rule: 'month' };
+    cfg.cats.R.auto = true;
+    cfg.varieties = cfg.varieties || {};
+    cfg.varieties.R = Object.assign({ 1: '玫瑰蜜露' }, cfg.varieties.R || {});
+    await pool.query(`UPDATE config SET data=$1 WHERE id=1`, [JSON.stringify(cfg)]);
+    await pool.query(`UPDATE products SET cat='R', variety='1', active=TRUE
+      WHERE cat='' AND (name LIKE '%玫瑰%' OR name LIKE '%花露%' OR name LIKE '%蜜露%') AND name NOT LIKE '%禮盒%'
+        AND components = '[]'::jsonb`);
+  }
 }
 
 /* ---------- helpers ---------- */
@@ -322,6 +339,11 @@ function lotPrefix(cfg, { cat, variety, matDate, matArr }) {
   if (!variety || !vars[variety]) throw new UserError('請選擇品種');
   return y + cat + t.m + variety;
 }
+const LOT_RE = /^[A-Z0-9]{2,20}(-[A-Z0-9]{1,4})?$/;
+const LOT_FMT = '批號格式不對（英文與數字，例如 HP101-A 或 HS0913B-F）';
+function isAuto(cfg, cat) { return !!(cfg.cats[cat] && cfg.cats[cat].auto); }
+// manual lot: pull material date / arrival letter out of it when it follows the syrup pattern
+function parseMat(lot) { const m = /^[A-Z][A-Z](\d{4})([A-Z]?)-/.exec(lot); return m ? { matDate: m[1], matArr: m[2] } : { matDate: null, matArr: null }; }
 async function nextSeq(client, prefix) {
   const { rows } = await client.query(
     `SELECT lot FROM tasks WHERE status='done' AND lot LIKE $1`, [prefix + '-%']);
@@ -363,7 +385,7 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
   if (raw.length > 10) throw new UserError('一筆最多 10 個批號');
   const parts = raw.map((l) => ({
     cat: str(l.cat, 2), variety: str(l.variety, 2), matDate: str(l.matDate, 4), matArr: str(l.matArr, 1),
-    seq: str(l.seq, 1).toUpperCase(), qty: parseInt(l.qty, 10),
+    seq: str(l.seq, 1).toUpperCase(), qty: parseInt(l.qty, 10), lot: str(l.lot, 30).toUpperCase().replace(/\s/g, ''),
   }));
   const client = await pool.connect();
   try {
@@ -384,7 +406,7 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
         const g = given.find((x) => +x.productId === cid) || {};
         const lot = str(g.lot, 30).toUpperCase();
         const date = str(g.date, 10);
-        if (!/^[A-Z0-9]+-[A-Z]$/.test(lot)) throw new UserError('請選擇「' + p.name + '」的批號');
+        if (!LOT_RE.test(lot)) throw new UserError('請選擇「' + p.name + '」的批號');
         if (!isDate(date)) throw new UserError('請選擇「' + p.name + '」的生產日期');
         return { productId: cid, code: p.code || '', name: p.name, lot, date };
       });
@@ -411,6 +433,27 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
     const done = [];
     for (let i = 0; i < parts.length; i++) {
       const p = parts[i], tag = parts.length > 1 ? '第 ' + (i + 1) + ' 個批號：' : '';
+      if (!cfg.cats[p.cat]) throw new UserError(tag + (p.cat ? '沒有這個類別代碼：' + p.cat : '請先選擇產品類別'));
+      if (!isAuto(cfg, p.cat)) {
+        // operator keys in the lot by hand
+        if (!LOT_RE.test(p.lot)) throw new UserError(tag + LOT_FMT);
+        const isMatM = cfg.cats[p.cat].rule === 'material', mm = parseMat(p.lot);
+        const valsM = [p.lot, operator, p.cat, isMatM ? t.variety : (p.variety || t.variety), p.qty, isMatM ? mm.matDate : null, isMatM ? mm.matArr : null];
+        if (i === 0) {
+          await client.query(
+            `UPDATE tasks SET status='done', lot=$1, completed_at=now(), operator=$2, cat=$3, variety=$4,
+               qty=$5, ordered_qty=COALESCE(ordered_qty, qty), mat_date=$6, mat_arr=$7 WHERE id=$8`, [...valsM, t.id]);
+        } else {
+          await client.query(
+            `INSERT INTO tasks (customer, product_id, product_name, ship_date, note, unit, sort_order, parent_id, ordered_qty, status,
+               lot, completed_at, operator, cat, variety, qty, mat_date, mat_arr)
+             VALUES ($8,$9,$10,$11,$12,$13,$14,$15,$16,'done',$1,now(),$2,$3,$4,$5,$6,$7)`,
+            [...valsM, t.customer, t.product_id, t.product_name, t.ship_date, t.note, t.unit || '', t.sort_order, t.id, t.ordered_qty || t.qty]);
+        }
+        done.push(p.lot + ' ×' + p.qty);
+        continue;
+      }
+      p.seq = ''; // locked category: the system always issues the next serial
       let prefix;
       try { prefix = lotPrefix(cfg, p); } catch (e) { if (e instanceof UserError) throw new UserError(tag + e.message); throw e; }
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [prefix]);
@@ -451,9 +494,63 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
+// one production batch shared by several orders: one lot for all
+app.post('/api/tasks/finish-batch', wrap(async (req, res) => {
+  const b = req.body || {};
+  const operator = str(b.operator, 50);
+  if (!operator) throw new UserError('請先點選操作人');
+  const items = (Array.isArray(b.items) ? b.items : []).map((x) => ({ id: parseInt(x.id, 10), qty: parseInt(x.qty, 10) }));
+  if (items.length < 1) throw new UserError('請至少選一筆訂單');
+  if (items.length > 30) throw new UserError('一次最多 30 筆');
+  if (items.some((x) => !x.id || !x.qty || x.qty < 1)) throw new UserError('每一筆的數量都要大於 0');
+  const p = { cat: str(b.cat, 2), variety: str(b.variety, 2), matDate: str(b.matDate, 4), matArr: str(b.matArr, 1) };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const cfg = await getConfig(client);
+    if (!cfg.cats[p.cat]) throw new UserError(p.cat ? '沒有這個類別代碼：' + p.cat : '請先選擇產品類別');
+    let lot;
+    if (isAuto(cfg, p.cat)) {
+      const prefix = lotPrefix(cfg, p);
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [prefix]);
+      const n = await nextSeq(client, prefix);
+      if (n > 25) throw new UserError('這個批號的序號已用到 Z');
+      lot = prefix + '-' + String.fromCharCode(65 + n);
+    } else {
+      lot = str(b.lot, 30).toUpperCase().replace(/\s/g, '');
+      if (!LOT_RE.test(lot)) throw new UserError(LOT_FMT);
+      const mm = parseMat(lot); p.matDate = mm.matDate; p.matArr = mm.matArr;
+    }
+    const isMat = cfg.cats[p.cat].rule === 'material';
+    const { rows } = await client.query(`SELECT * FROM tasks WHERE id = ANY($1::int[]) FOR UPDATE`, [items.map((x) => x.id)]);
+    let rest = 0;
+    for (const it of items) {
+      const t = rows.find((r) => r.id === it.id);
+      if (!t || t.status !== 'open') throw new UserError('有訂單已經完成或取消了，請重新整理');
+      if (it.qty > t.qty) throw new UserError(t.customer + '：數量需介於 1 到 ' + t.qty);
+      const { rows: pr } = await client.query('SELECT components FROM products WHERE id=$1', [t.product_id]);
+      if (pr[0] && (pr[0].components || []).length) throw new UserError('禮盒不能和其他訂單一起完成，請個別完成');
+      await client.query(
+        `UPDATE tasks SET status='done', lot=$1, completed_at=now(), operator=$2, cat=$3, variety=$4,
+           qty=$5, ordered_qty=COALESCE(ordered_qty, qty), mat_date=$6, mat_arr=$7 WHERE id=$8`,
+        [lot, operator, p.cat, isMat ? t.variety : (p.variety || t.variety), it.qty, isMat ? p.matDate : null, isMat ? (p.matArr == null ? null : p.matArr) : null, t.id]);
+      if (t.qty - it.qty > 0) {
+        rest++;
+        await client.query(
+          `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, sort_order, parent_id, unit)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [t.customer, t.product_id, t.product_name, t.cat, t.variety, t.qty - it.qty, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']);
+      }
+    }
+    await bump(client);
+    await client.query('COMMIT');
+    res.json({ lot, count: items.length, rest });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
 app.post('/api/tasks/:id/lot', wrap(async (req, res) => {
   const lot = str(req.body && req.body.lot, 30).toUpperCase();
-  if (!/^[A-Z0-9]+-[A-Z]$/.test(lot)) throw new UserError('格式不對，例如 HS0913B-F 或 HP091-A');
+  if (!LOT_RE.test(lot)) throw new UserError(LOT_FMT);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -534,10 +631,11 @@ app.put('/api/customers/:id', wrap(async (req, res) => {
 }));
 
 /* best-guess category for a product name; corrected by hand in 設定 when wrong */
-const NOT_PRODUCED = /空桶|塑膠桶|運費|油瓶|花粉|蜂王|蜂蠟|花露/;
+const NOT_PRODUCED = /空桶|塑膠桶|運費|油瓶|花粉|蜂王|蜂蠟/;
 function classify(name) {
   if (NOT_PRODUCED.test(name)) return { cat: '', variety: '', inactive: true };
   if (/禮盒/.test(name)) return { cat: '', variety: '' };
+  if (/玫瑰|花露|蜜露/.test(name)) return { cat: 'R', variety: '1' };
   if (/糖漿/.test(name)) return { cat: 'S', variety: '' };
   if (/果樂茶/.test(name)) {
     const v = /檸檬/.test(name) ? '1' : /百香果|葡萄柚/.test(name) ? '2' : /芒果|柳橙|草莓/.test(name) ? '3' : /蜜桃|荔枝/.test(name) ? '4' : '';
