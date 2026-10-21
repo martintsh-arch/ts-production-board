@@ -250,17 +250,17 @@ function drawFinish(){
   if(F.box)return drawBox();
   const t=F.t,c=cfg(),y=yearCode(new Date().getFullYear()),people=c.people||[],isMat=rule()==='material';
   let h='<div class="scrim" id="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="完成生產">'+
-   (F.batch?'<div style="display:flex;flex-direction:column;gap:4px"><div class="cust"><span class="cust-tag">同一鍋</span>分給 '+F.batch.length+' 張訂單，共用一個批號</div><div class="hint">批號只要設定一次，會套用到下面全部訂單</div></div>':
-   '<div style="display:flex;flex-direction:column;gap:4px"><div class="cust"><span class="cust-tag">客戶</span>'+esc(t.customer)+'</div><div class="pname">'+esc(t.productName)+' <span class="mono">× '+qtyU(t)+'</span></div><div class="meta">'+shipPill(t)+'</div>'+(t.note?'<div class="note-box">備註：'+esc(t.note)+'</div>':'')+'</div>');
-  h+='<div class="sec"><div class="lbl">操作人</div><div class="chips">'+(people.length?people.map(n=>'<button class="chip" data-op="'+esc(n)+'" aria-pressed="'+(F.operator===n)+'">'+esc(n)+'</button>').join(''):'<span class="hint">還沒有人員名單，請到「設定」新增。</span>')+'</div></div>';
-  h+='<div class="sec"><div class="lbl">產品類別</div><div class="chips">'+Object.keys(c.cats).map(k=>'<button class="chip" data-cat="'+esc(k)+'" aria-pressed="'+(F.cat===k)+'">'+esc(k)+' '+esc(c.cats[k].name)+'</button>').join('')+'</div>'+
+   (F.batch?'<div class="sheet-h"><div class="cust"><span class="cust-tag">同一鍋</span>分給 '+F.batch.length+' 張訂單，共用一個批號</div><div class="hint">批號只要設定一次，會套用到下面全部訂單</div></div>':
+   '<div class="sheet-h"><div class="cust"><span class="cust-tag">客戶</span>'+esc(t.customer)+'</div><div class="pname">'+esc(t.productName)+' <span class="mono">× '+qtyU(t)+'</span></div><div class="meta">'+shipPill(t)+'</div>'+(t.note?'<div class="note-box">備註：'+esc(t.note)+'</div>':'')+'</div>');
+  h+='<div class="sec"><div class="lbl"><i class="sn">1</i>操作人</div><div class="chips">'+(people.length?people.map(n=>'<button class="chip" data-op="'+esc(n)+'" aria-pressed="'+(F.operator===n)+'">'+esc(n)+'</button>').join(''):'<span class="hint">還沒有人員名單，請到「設定」新增。</span>')+'</div></div>';
+  h+='<div class="sec"><div class="lbl"><i class="sn">2</i>產品類別</div><div class="chips">'+Object.keys(c.cats).map(k=>'<button class="chip" data-cat="'+esc(k)+'" aria-pressed="'+(F.cat===k)+'">'+esc(k)+' '+esc(c.cats[k].name)+'</button>').join('')+'</div>'+
    (!F.cat?'<div class="warn">這個品項還沒設定類別，請點選正確的類別（可到「設定」的品項主檔設定一次，以後就會自動帶入）。</div>':'')+
    (F.cat&&F.defCat&&F.cat!==F.defCat?'<div class="warn">這個品項預設是 '+esc(F.defCat)+' '+esc(catName(F.defCat))+'，你改成了 '+esc(F.cat)+' '+esc(catName(F.cat))+'。確認無誤再完成。</div>':'')+'</div>';
   if(!isAuto()&&F.cat){
     const pids=[...new Set((F.batch||[F.t]).map(x=>x.productId))],rec=[];
     pids.forEach(id=>(S.recentLots[id]||[]).forEach(r=>{if(!rec.some(x=>x[0]===r[0]))rec.push(r)}));
     const pre=manualPrefix(),ex=isMat?y+F.cat+'0913B-A':y+F.cat+pad(new Date().getMonth()+1)+(F.variety||'1')+'-A';
-    h+='<div class="sec"><div class="lbl">批號 <span class="lbl-sub">由作業人員輸入</span></div>'+
+    h+='<div class="sec"><div class="lbl"><i class="sn">3</i>批號 <span class="lbl-sub">由作業人員輸入</span></div>'+
       '<input id="flot" class="mono lot-in" value="'+esc(F.mlot)+'" placeholder="例如 '+esc(ex)+'" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done" aria-label="批號">'+
       '<div class="hint">點一下快速帶入，再補上後面的碼</div><div class="chips">'+
       (pre?'<button type="button" class="chip lotchip" data-mlot="'+esc(pre)+'"><b class="mono">'+esc(pre)+'…</b><small>本月開頭</small></button>':'')+
@@ -268,7 +268,7 @@ function drawFinish(){
       '</div></div>';
   }else{
   // lot header (system-locked category)
-  h+='<div class="sec"><div class="lbl">批號 <span class="lbl-sub lock">🔒 系統自動編號</span></div><div class="lot"><div class="seg"><b>'+y+'</b><small>年份</small></div><div class="seg"><b>'+esc((c.cats[F.cat]||{}).code||F.cat)+'</b><small>'+esc(catName(F.cat))+'</small></div>';
+  h+='<div class="sec"><div class="lbl"><i class="sn">3</i>批號 <span class="lbl-sub lock">🔒 系統自動編號</span></div><div class="lot"><div class="seg"><b>'+y+'</b><small>年份</small></div><div class="seg"><b>'+esc((c.cats[F.cat]||{}).code||F.cat)+'</b><small>'+esc(catName(F.cat))+'</small></div>';
   if(isMat){const mat=(c.cats[F.cat]||{}).mat||'主原料';
     h+='<div class="seg man'+(F.step==='date'?' active':'')+'" data-step="date"><b>'+esc((F.matDate+'____').slice(0,4))+'</b><small>'+esc(mat)+'有效日</small></div>'+
        '<div class="seg man'+(F.step==='arr'?' active':'')+'" data-step="arr"><b>'+(F.arrSet?esc(F.matArr||'—'):'_')+'</b><small>到貨次序</small></div>';
@@ -291,14 +291,14 @@ function drawFinish(){
   h+='</div>';
   }
   if(F.batch){
-    h+='<div class="sec"><div class="lbl">各訂單完成數量（少於訂單的部分會留在看板）</div><div style="display:flex;flex-direction:column;gap:8px">'+
+    h+='<div class="sec"><div class="lbl"><i class="sn">4</i>各訂單完成數量（少於訂單的部分會留在看板）</div><div style="display:flex;flex-direction:column;gap:8px">'+
       F.batch.map(b=>'<div class="bline"><div style="min-width:0;flex:1"><div class="bcust">'+esc(b.customer)+'</div><div class="hint">'+esc(b.productName)+'　訂單 '+qtyU(b)+(b.note?'　<span style="color:var(--amber)">備註：'+esc(b.note)+'</span>':'')+'</div></div>'+
         '<input class="bqty mono" data-id="'+b.id+'" type="number" inputmode="numeric" min="1" max="'+b.qty+'" value="'+esc(F.bq[b.id])+'" aria-label="'+esc(b.customer)+' 完成數量"><span class="hint">'+esc(b.unit||'')+'</span></div>').join('')+'</div></div>';
     h+='<div class="err">'+esc(F.err)+'</div><div class="row"><button id="fcancel" style="flex:1">取消</button><button id="fok" class="primary" style="flex:2;min-height:60px;font-size:18px"'+(F.busy?' disabled':'')+'>'+(F.busy?'儲存中…':'確認完成 '+F.batch.length+' 筆')+'</button></div></div></div>';
     const sc=$('#scrim')?$('.sheet').scrollTop:0;$('#modal').innerHTML=h;$('.sheet').scrollTop=sc;return;
   }
   const used=F.lots.reduce((s,l)=>s+l.qty,0),left=t.qty-used,cur=parseInt(F.qty,10)||0,tot=used+cur,u=t.unit?' '+t.unit:'';
-  h+='<div class="sec"><label class="lbl" for="fqty">'+(F.lots.length?'這個批號的數量':'這個批號的數量（一筆用到兩個批號時，先填第一批的數量，再按下面「＋ 再加一個批號」）')+'</label>'+
+  h+='<div class="sec"><label class="lbl" for="fqty"><i class="sn">4</i>'+(F.lots.length?'這個批號的數量':'這個批號的數量（一筆用到兩個批號時，先填第一批的數量，再按下面「＋ 再加一個批號」）')+'</label>'+
     '<div class="row" style="flex-wrap:nowrap"><input id="fqty" class="mono" type="number" inputmode="numeric" min="1" max="'+left+'" value="'+esc(F.qty)+'" style="font-size:22px;flex:1"><span class="hint" style="white-space:nowrap">'+esc(t.unit||'')+'</span></div>'+
     '<button type="button" id="faddlot" style="align-self:flex-start">＋ 再加一個批號</button></div>';
   if(F.lots.length){
@@ -377,7 +377,7 @@ function addLot(){
 function drawBox(){
   const t=F.t,people=cfg().people||[];
   let h='<div class="scrim" id="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="完成生產">'+
-   '<div style="display:flex;flex-direction:column;gap:4px"><div class="cust"><span class="cust-tag">客戶</span>'+esc(t.customer)+'</div><div class="pname">'+esc(t.productName)+' <span class="mono">× '+qtyU(t)+'</span></div><div class="meta">'+shipPill(t)+'<span class="pill p-box">禮盒不需要批號</span></div>'+(t.note?'<div class="note-box">備註：'+esc(t.note)+'</div>':'')+'</div>';
+   '<div class="sheet-h"><div class="cust"><span class="cust-tag">客戶</span>'+esc(t.customer)+'</div><div class="pname">'+esc(t.productName)+' <span class="mono">× '+qtyU(t)+'</span></div><div class="meta">'+shipPill(t)+'<span class="pill p-box">禮盒不需要批號</span></div>'+(t.note?'<div class="note-box">備註：'+esc(t.note)+'</div>':'')+'</div>';
   h+='<div class="sec"><div class="lbl">操作人</div><div class="chips">'+(people.length?people.map(n=>'<button class="chip" data-op="'+esc(n)+'" aria-pressed="'+(F.operator===n)+'">'+esc(n)+'</button>').join(''):'<span class="hint">還沒有人員名單，請到「設定」新增。</span>')+'</div></div>';
   h+='<div class="sec"><div class="lbl">禮盒內容物：點選裝進去的那一批</div>';
   F.box.forEach((p,i)=>{const c=F.cont[p.id],rec=S.recentLots[p.id]||[];
@@ -441,7 +441,7 @@ function renderOrders(){
   if(!ed&&OF.editing){OF.editing=null;resetOrderForm()}
   const names=new Set(S.customers.map(c=>c.name));S.open.concat(S.done).forEach(t=>{if(t.customer)names.add(t.customer)});
   const codeOf={};S.customers.forEach(c=>{if(c.code)codeOf[c.name]=c.code});
-  let h='<h2>'+(ed?'修改訂單':'新增出貨訂單')+'</h2><form class="panel" id="oform" novalidate><div class="grid">'+
+  let h='<div class="o-layout"><section class="o-form"><header class="pg-head"><h1>'+(ed?'修改訂單':'新增出貨訂單')+'</h1><p>'+(ed?'改完按「儲存修改」，看板會同步更新':'選客戶會列出他買過的品項，點一下就能加入')+'</p></header><form class="panel" id="oform" novalidate><div class="grid">'+
    '<label class="f" for="o-cust" style="grid-column:1/-1">客戶（輸入名稱或編號）<input id="o-cust" list="custlist" autocomplete="off" placeholder="例：全盛食品行" value="'+esc(OF.cust)+'"></label><datalist id="custlist">'+[...names].sort((a,b)=>a.localeCompare(b,'zh-Hant')).map(c=>'<option value="'+esc(c)+'">'+(codeOf[c]?esc(codeOf[c]):'')+'</option>').join('')+'</datalist>'+
    '<div id="o-hist" style="grid-column:1/-1"></div>'+
    '<div style="grid-column:1/-1;display:flex;flex-direction:column;gap:8px"><div class="lbl" style="font-size:13px;color:var(--muted)">品項、數量與單位</div><div id="o-lines" style="display:flex;flex-direction:column;gap:8px"></div>'+
@@ -452,11 +452,16 @@ function renderOrders(){
    (prods.length?'':'<p class="hint">還沒有品項，請先到「設定」新增品項或匯入新高手資料。</p>')+'</form>';
   const lim=addDays(today(),2);
   const all=S.open.slice().sort((a,b)=>a.shipDate.localeCompare(b.shipDate)||a.customer.localeCompare(b.customer,'zh-Hant')||(a.order||0)-(b.order||0));
-  h+='<h2>未完成訂單</h2>';
+  const td=today(),grp={};all.forEach(t=>{(grp[t.shipDate]=grp[t.shipDate]||[]).push(t)});
+  const dlabel=d=>d<td?'逾期 '+d.slice(5).replace('-','/'):d===td?'今日出貨':d===addDays(td,1)?'明日出貨':d.slice(5).replace('-','/')+' 出貨';
+  h+='</section><section class="o-list"><header class="pg-head"><h1>未完成訂單</h1><p>'+(all.length?'共 '+all.length+' 筆，三天內出貨的已在看板上':'目前沒有')+'</p></header>';
   if(!all.length)h+='<div class="empty"><b>沒有未完成的訂單</b>新增的訂單會列在這裡；出貨日在三天內的會自動上看板。</div>';
-  else h+='<div class="tbl-wrap"><table><thead><tr><th>出貨日</th><th>客戶</th><th>品項</th><th>數量</th><th>狀態</th><th></th></tr></thead><tbody>'+all.map(t=>
-    '<tr><td class="mono">'+esc(t.shipDate)+'</td><td>'+esc(t.customer)+'</td><td>'+esc(t.productName)+(t.note?'<div class="hint">'+esc(t.note)+'</div>':'')+'</td><td class="mono">'+qtyU(t)+'</td><td>'+(t.shipDate<=lim?'<span class="pill p-today">已上看板</span>':'<span class="pill p-later">排隊中</span>')+'</td>'+
-    '<td><div class="row" style="flex-wrap:nowrap"><button data-oedit="'+t.id+'">修改</button><button class="danger" data-ovoid="'+t.id+'">取消</button></div></td></tr>').join('')+'</tbody></table></div>';
+  else h+=Object.keys(grp).map(d=>'<div class="ogrp'+(d<td?' g-over':d===td?' g-today':'')+'"><div class="ogrp-h"><b>'+dlabel(d)+'</b><span>'+grp[d].length+' 筆</span></div>'+
+    grp[d].map(t=>'<div class="orow"><div class="orow-m"><b>'+esc(t.customer)+'</b><span>'+esc(t.productName)+'</span>'+(t.note?'<em>'+esc(t.note)+'</em>':'')+'</div>'+
+      '<div class="orow-q"><b>'+num(t.qty)+'</b><span>'+esc(t.unit||'')+'</span></div>'+
+      (t.shipDate<=lim?'<span class="pill p-on">看板中</span>':'<span class="pill p-later">排隊中</span>')+
+      '<div class="orow-a"><button data-oedit="'+t.id+'">修改</button><button class="danger" data-ovoid="'+t.id+'">取消</button></div></div>').join('')+'</div>').join('');
+  h+='</section></div>';
   v.innerHTML=h;renderLines();renderHist();
 }
 function renderLines(focusIdx){
@@ -540,11 +545,11 @@ $('#v-orders').addEventListener('click',async e=>{
 function renderRecords(){
   const v=$('#v-records'),q=S.q.trim().toLowerCase();
   const rows=S.done.filter(t=>!q||[t.lot,t.customer,t.productName,t.operator,(t.matDate||'')+(t.matArr||''),(t.contents||[]).map(c=>c.lot+' '+c.name).join(' ')].join(' ').toLowerCase().includes(q));
-  let h='<div class="row" style="margin-bottom:12px"><input id="rq" placeholder="搜尋批號、客戶、品項、原料批（例：0913B）" value="'+esc(S.q)+'" style="flex:1;min-width:220px">'+
+  let h='<header class="pg-head"><h1>生產紀錄</h1><p>用批號、客戶或原料批反查，每一筆都有完成時間與操作人</p></header><div class="row rec-bar"><input id="rq" placeholder="搜尋批號、客戶、品項、原料批（例：0913B）" value="'+esc(S.q)+'" style="flex:1;min-width:220px">'+
     '<a class="btnlink" href="/api/export.csv'+(S.pin?'?pin='+encodeURIComponent(S.pin):'')+'">匯出 Excel（CSV）</a></div>';
   if(!S.done.length)h+='<div class="empty"><b>還沒有生產紀錄</b>在看板上按「完成生產」後，紀錄會出現在這裡，可以用批號回查。</div>';
   else h+='<p class="hint">共 '+rows.length+' 筆</p><div class="tbl-wrap"><table><thead><tr><th>完成時間</th><th>批號</th><th>品項</th><th>數量</th><th>客戶</th><th>出貨日</th><th>操作人</th><th></th></tr></thead><tbody>'+rows.map(t=>
-   '<tr><td class="mono">'+fmtTime(t.completedAt)+'</td><td class="mono" style="font-weight:600">'+(t.contents?t.contents.map(c=>'<div>'+esc(c.lot)+' <span class="hint" style="font-family:var(--f-body);font-weight:400">'+esc(shortName(c.name))+'　'+esc(c.date.slice(5).replace('-','/'))+'</span></div>').join(''):esc(t.lot))+(t.lotHistory&&t.lotHistory.length?'<div class="hint">曾修改 '+t.lotHistory.length+' 次</div>':'')+'</td><td>'+esc(t.productName)+'</td><td class="mono">'+qtyU(t)+(t.orderedQty&&t.orderedQty!==t.qty?'<div class="hint">訂單 '+num(t.orderedQty)+'</div>':'')+'</td><td>'+esc(t.customer)+'</td><td class="mono">'+esc(t.shipDate)+'</td><td>'+esc(t.operator)+'</td>'+
+   '<tr><td class="mono">'+fmtTime(t.completedAt)+'</td><td class="lotcell">'+(t.contents?t.contents.map(c=>'<div><span class="stamp sm">'+esc(c.lot)+'</span> <span class="hint" style="font-family:var(--f-body);font-weight:400">'+esc(shortName(c.name))+'　'+esc(c.date.slice(5).replace('-','/'))+'</span></div>').join(''):'<span class="stamp">'+esc(t.lot)+'</span>')+(t.lotHistory&&t.lotHistory.length?'<div class="hint">曾修改 '+t.lotHistory.length+' 次</div>':'')+'</td><td>'+esc(t.productName)+'</td><td class="mono">'+qtyU(t)+(t.orderedQty&&t.orderedQty!==t.qty?'<div class="hint">訂單 '+num(t.orderedQty)+'</div>':'')+'</td><td>'+esc(t.customer)+'</td><td class="mono">'+esc(t.shipDate)+'</td><td>'+esc(t.operator)+'</td>'+
    '<td>'+(t.contents?'<span class="pill p-box">禮盒</span>':'<button data-rlot="'+t.id+'">改批號</button>')+'</td></tr>').join('')+'</tbody></table></div>';
   v.innerHTML=h;
 }
@@ -566,7 +571,7 @@ function openLotEdit(t){
 /* ---------- settings ---------- */
 function renderSettings(){
   const v=$('#v-settings'),c=cfg();
-  let h='<h2>人員名單</h2><div class="panel"><div class="chips" style="margin-bottom:12px">'+((c.people||[]).map((n,i)=>'<button class="chip" data-delp="'+i+'" title="移除">'+esc(n)+'　×</button>').join('')||'<span class="hint">還沒有人員，新增後在看板完成生產時可以點選。</span>')+'</div>'+
+  let h='<header class="pg-head"><h1>設定</h1><p>人員、品項主檔、批號規則都在這裡，改了所有裝置立刻同步</p></header><h2>人員名單</h2><div class="panel"><div class="chips" style="margin-bottom:12px">'+((c.people||[]).map((n,i)=>'<button class="chip" data-delp="'+i+'" title="移除">'+esc(n)+'　×</button>').join('')||'<span class="hint">還沒有人員，新增後在看板完成生產時可以點選。</span>')+'</div>'+
    '<div class="row"><input id="s-person" placeholder="輸入姓名" style="flex:1;min-width:160px"><button id="s-addp" class="primary">新增人員</button></div></div>';
   h+='<h2>匯入新高手銷貨紀錄</h2><div class="panel"><p class="hint" style="margin-top:0">從新高手匯出的 CSV 或 Excel 另存的 CSV。欄位順序：客戶名稱、品號、品名（或：客戶編號、客戶名稱、品號、品名）。重複匯入不會產生重複資料。</p>'+
    '<div class="row"><input id="s-imp" type="file" accept=".csv,text/csv" style="flex:1;min-width:200px"><button id="s-impgo" class="primary">匯入</button></div><div class="err" id="imperr"></div><div id="impres" class="hint"></div></div>';
