@@ -17,7 +17,8 @@ const guessUnit=p=>!p?'箱':/桶/.test(p.name)?'桶':/瓶/.test(p.name)?'瓶':'�
 const store={get(k){try{return localStorage.getItem(k)||''}catch(e){return''}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
 function toast(m){const t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(t._h);t._h=setTimeout(()=>t.hidden=true,2800)}
 function setStatus(m){$('#status').textContent=m}
-function tick(){const d=new Date();$('#clock').textContent=(d.getMonth()+1)+'/'+d.getDate()+' '+pad(d.getHours())+':'+pad(d.getMinutes())}
+const WD='日一二三四五六';
+function tick(){const d=new Date();$('#clock').innerHTML='<b>'+pad(d.getHours())+':'+pad(d.getMinutes())+'</b><small>'+(d.getMonth()+1)+'/'+d.getDate()+' 週'+WD[d.getDay()]+'</small>'}
 tick();setInterval(tick,15000);
 
 /* ---------- sound ---------- */
@@ -140,10 +141,10 @@ function render(force){
 let dragging=false;
 function unitSum(ts){const m={};ts.forEach(t=>{const u=t.unit||'件';m[u]=(m[u]||0)+(+t.qty||0)});const k=Object.keys(m);return k.length?k.map(u=>num(m[u])+' '+u).join('　'):'—'}
 function shipCell(t,td){const md=t.shipDate.slice(5).replace('-','/');
-  if(t.shipDate<td)return '<div class="c-ship s-over"><small>逾期</small><b>'+md+'</b></div>';
-  if(t.shipDate===td)return '<div class="c-ship s-today"><small>出貨</small><b>今日</b></div>';
-  if(t.shipDate===addDays(td,1))return '<div class="c-ship s-tom"><small>出貨</small><b>明日</b></div>';
-  return '<div class="c-ship s-later"><small>出貨</small><b>'+md+'</b></div>'}
+  if(t.shipDate<td)return '<span class="c-ship s-over">逾期 <b>'+md+'</b></span>';
+  if(t.shipDate===td)return '<span class="c-ship s-today">今日出貨</span>';
+  if(t.shipDate===addDays(td,1))return '<span class="c-ship s-tom">明日出貨</span>';
+  return '<span class="c-ship s-later"><b>'+md+'</b> 出貨</span>'}
 const IC={
   pick:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M15 17.5l2 2 4-4"/></svg>',
   full:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>'};
@@ -154,35 +155,38 @@ function renderBoard(){
   const doneToday=S.done.filter(t=>t.completedAt&&ymd(new Date(t.completedAt))===td);
   const dueDone=doneToday.filter(t=>t.shipDate<=td).length,dueOpen=overL.length+todayL.length;
   const rate=dueDone+dueOpen?Math.round(dueDone*100/(dueDone+dueOpen)):null;
-  let h='<div class="kpis">'+
-    '<div class="kpi"><span class="k-l">待生產</span><b class="mono">'+list.length+'<i>筆</i></b><small>'+esc(unitSum(list))+'</small></div>'+
-    '<div class="kpi k-warn"><span class="k-l">今日出貨待做</span><b class="mono">'+todayL.length+'<i>筆</i></b><small>'+esc(todayL.length?unitSum(todayL):'今日出貨已清空')+'</small></div>'+
-    '<div class="kpi '+(overL.length?'k-bad':'k-calm')+'"><span class="k-l">逾期未完成</span><b class="mono">'+overL.length+'<i>筆</i></b><small>'+(overL.length?'請優先處理':'無逾期')+'</small></div>'+
-    '<div class="kpi k-ok"><span class="k-l">今日已完成</span><b class="mono">'+doneToday.length+'<i>筆</i></b><small>'+esc(doneToday.length?unitSum(doneToday):'尚未有完成')+'</small></div>'+
-    '<div class="kpi k-rate"><span class="k-l">今日出貨達成率</span><b class="mono">'+(rate==null?'—':rate+'<i>%</i>')+'</b><div class="bar" role="img" aria-label="達成率 '+(rate==null?'無資料':rate+'%')+'"><i style="width:'+(rate||0)+'%"></i></div></div>'+
-    '</div>';
-  h+='<div class="bd-head"><div><b>生產排程</b><span>三日內出貨・依序生產・拖曳 ⠿ 調整順序</span></div><div class="bd-act">'+
+  const now=new Date(),dueLeft=overL.length+todayL.length;
+  const hex=(cls,v,l,sub)=>'<div class="hex '+cls+'"><div class="hv">'+v+'</div><div class="hl">'+l+'</div>'+(sub?'<div class="hs">'+esc(sub)+'</div>':'')+'</div>';
+  let h='<section class="bd-hero"><div class="bd-title"><h1>今日生產</h1><p>'+(now.getMonth()+1)+' 月 '+now.getDate()+' 日 週'+WD[now.getDay()]+'　'+
+    (list.length?'排程中 <b>'+list.length+' 筆</b>'+(dueLeft?'，今天要出貨的還有 <b>'+dueLeft+' 筆</b>':'，今天要出貨的都做完了'):'目前沒有待生產項目')+'</p></div>'+
+    '<div class="hexes" role="group" aria-label="今日指標">'+
+    hex('','<span class="mono-n">'+list.length+'</span>','待生產',unitSum(list))+
+    hex(todayL.length?'h-warn':'',todayL.length,'今日出貨',todayL.length?unitSum(todayL):'已清空')+
+    hex(overL.length?'h-bad':'',overL.length,'逾期',overL.length?'請優先處理':'無')+
+    hex('h-ok',doneToday.length,'今日完成',doneToday.length?unitSum(doneToday):'')+
+    '<div class="hex h-rate'+((rate||0)<55?' low':'')+'" style="--fill:'+(rate||0)+'%" role="img" aria-label="今日出貨達成率 '+(rate==null?'無資料':rate+'%')+'"><span class="fill"></span><div class="hv">'+(rate==null?'—':rate+'<i>%</i>')+'</div><div class="hl">出貨達成率</div></div>'+
+    '</div></section>';
+  h+='<div class="bd-head"><div><b>生產排程</b><span>依序生產，拖曳 ⠿ 可調整順序</span></div><div class="bd-act">'+
     (S.pick?'':'<button type="button" id="pickstart" class="pick-start">'+IC.pick+'多筆一起完成（同一鍋）</button>')+
-    '<button type="button" id="fullbtn" class="ghost-btn" aria-label="全螢幕顯示" title="全螢幕顯示">'+IC.full+'<span>全螢幕</span></button></div></div>';
+    '<button type="button" id="fullbtn" class="ghost-btn" aria-label="全螢幕顯示">'+IC.full+'<span>全螢幕</span></button></div></div>';
   if(!list.length)h+='<div class="empty"><b>目前沒有待生產項目</b>三天內（含今日）要出貨的訂單會自動出現在這裡。到「訂單輸入」新增第一筆。</div>';
   else h+=(S.pick?'<div class="pickbar-top"><b>勾選這一鍋要分給哪幾張訂單</b><span>點卡片勾選，同一類別（品種）才能共用批號</span></div>':'')+
     '<div class="list'+(S.pick?' picking':'')+'" id="blist">'+list.map((t,i)=>{
     const bx=boxComps(t.productId),on=S.pick&&S.pick.has(t.id),next=!S.pick&&i===0;
-    const code=bx.length?'<span class="pill p-box">禮盒：'+esc(bx.map(p=>shortName(p.name)).join('＋'))+'</span>':t.cat?'<span class="pill p-code mono">'+esc(t.cat)+esc(t.variety||'')+'</span><span class="pill p-cat">'+esc(catName(t.cat))+((cfg().cats[t.cat]||{}).auto?' 🔒':'')+'</span>':'<span class="pill p-tom">未設類別</span>';
+    const code=bx.length?'<span class="pill p-box">禮盒：'+esc(bx.map(p=>shortName(p.name)).join('＋'))+'</span>':t.cat?'<span class="pill p-code">'+esc(t.cat)+esc(t.variety||'')+'</span><span class="pill p-cat">'+esc(catName(t.cat))+((cfg().cats[t.cat]||{}).auto?' 🔒':'')+'</span>':'<span class="pill p-tom">未設類別</span>';
     return '<div class="card'+(t.shipDate<td?' over':t.shipDate===td?' u-today':t.shipDate===addDays(td,1)?' u-tom':'')+(on?' picked':'')+(next?' next':'')+'" data-id="'+t.id+'"'+(S.pick?' role="checkbox" aria-checked="'+on+'" tabindex="0"':'')+'>'+
-      '<div class="c-ord">'+(S.pick?'<span class="seq pickbox'+(on?' on':'')+'" aria-hidden="true">'+(on?'✓':'')+'</span>':'<span class="grip" aria-label="拖曳排序" title="拖曳排序">⠿</span><span class="seq mono">'+pad(i+1)+'</span>')+'</div>'+
-      '<div class="c-main">'+(next?'<span class="next-tag">下一筆</span>':'')+'<div class="cust">'+esc(t.customer)+'</div>'+
-      '<div class="pname">'+esc(t.productName)+'</div>'+
+      '<div class="c-top">'+(S.pick?'<span class="pickbox'+(on?' on':'')+'" aria-hidden="true">'+(on?'✓':'')+'</span>':'<span class="grip" aria-label="拖曳排序" title="拖曳排序">⠿</span><span class="seq">'+pad(i+1)+'</span>')+
+        (next?'<span class="next-tag">現在生產</span>':'')+shipCell(t,td)+'</div>'+
+      '<div class="cust">'+esc(t.customer)+'</div><div class="pname">'+esc(t.productName)+'</div>'+
       '<div class="meta">'+code+(t.parentId?'<span class="pill p-later">續做</span>':'')+'</div>'+
-      (t.note?'<div class="note-box">備註：'+esc(t.note)+'</div>':'')+'</div>'+
-      '<div class="c-qty"><b class="mono">'+num(t.qty)+'</b><span>'+esc(t.unit||'')+'</span></div>'+
-      shipCell(t,td)+
-      (S.pick?'':'<button class="done-btn" data-act="finish" data-id="'+t.id+'">完成生產</button>')+'</div>'}).join('')+'</div>'+
-    (S.pick?'<div class="pickbar"><span>已選 <b class="mono">'+S.pick.size+'</b> 筆</span><button type="button" id="pickcancel">取消</button><button type="button" id="pickgo" class="primary"'+(S.pick.size?'':' aria-disabled="true"')+'>一起完成</button></div>':'');
-  if(doneToday.length)h+='<div class="bd-head bd-done"><div><b>今日已完成</b><span>'+doneToday.length+' 筆・批號有誤可直接修改</span></div></div><div class="done-list">'+
-    doneToday.map(t=>'<div class="drow"><span class="d-ok" aria-hidden="true">✓</span><span class="mono d-time">'+fmtTime(t.completedAt).split(' ')[1]+'</span>'+
+      (t.note?'<div class="note-box">備註：'+esc(t.note)+'</div>':'')+
+      '<div class="c-bot"><div class="c-qty"><b>'+num(t.qty)+'</b><span>'+esc(t.unit||'')+'</span></div>'+
+      (S.pick?'':'<button class="done-btn" data-act="finish" data-id="'+t.id+'">完成生產</button>')+'</div></div>'}).join('')+'</div>'+
+    (S.pick?'<div class="pickbar"><span>已選 <b>'+S.pick.size+'</b> 筆</span><button type="button" id="pickcancel">取消</button><button type="button" id="pickgo" class="primary"'+(S.pick.size?'':' aria-disabled="true"')+'>一起完成</button></div>':'');
+  if(doneToday.length)h+='<div class="bd-head bd-done"><div><b>今日已完成</b><span>'+doneToday.length+' 筆，批號有誤可直接修改</span></div></div><div class="done-list">'+
+    doneToday.map(t=>'<div class="drow"><span class="d-ok" aria-hidden="true">✓</span><span class="d-time">'+fmtTime(t.completedAt).split(' ')[1]+'</span>'+
       '<span class="d-main"><b>'+esc(t.customer)+'</b><span>'+esc(t.productName)+'　'+qtyU(t)+'</span></span>'+
-      '<span class="mono d-lot">'+esc(t.lot)+'</span><span class="d-op">'+esc(t.operator)+'</span>'+
+      '<span class="d-lot">'+esc(t.lot)+'</span><span class="d-op">'+esc(t.operator)+'</span>'+
       (t.contents?'<span></span>':'<button type="button" data-blot="'+t.id+'">改批號</button>')+'</div>').join('')+'</div>';
   v.innerHTML=h;
   const el=$('#blist');
