@@ -268,7 +268,7 @@ function drawFinish(){
       '</div></div>';
   }else{
   // lot header (system-locked category)
-  h+='<div class="sec"><div class="lbl">批號 <span class="lbl-sub lock">🔒 系統自動編號</span></div><div class="lot"><div class="seg"><b>'+y+'</b><small>年份</small></div><div class="seg"><b>'+esc(F.cat)+'</b><small>'+esc(catName(F.cat))+'</small></div>';
+  h+='<div class="sec"><div class="lbl">批號 <span class="lbl-sub lock">🔒 系統自動編號</span></div><div class="lot"><div class="seg"><b>'+y+'</b><small>年份</small></div><div class="seg"><b>'+esc((c.cats[F.cat]||{}).code||F.cat)+'</b><small>'+esc(catName(F.cat))+'</small></div>';
   if(isMat){const mat=(c.cats[F.cat]||{}).mat||'主原料';
     h+='<div class="seg man'+(F.step==='date'?' active':'')+'" data-step="date"><b>'+esc((F.matDate+'____').slice(0,4))+'</b><small>'+esc(mat)+'有效日</small></div>'+
        '<div class="seg man'+(F.step==='arr'?' active':'')+'" data-step="arr"><b>'+(F.arrSet?esc(F.matArr||'—'):'_')+'</b><small>到貨次序</small></div>';

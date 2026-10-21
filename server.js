@@ -29,16 +29,16 @@ const DEFAULT_CONFIG = {
     J: { name: '果樂茶', rule: 'month', auto: true },
     O: { name: '油品', rule: 'month' },
     V: { name: '蜂蜜醋', rule: 'month' },
-    R: { name: '玫瑰蜜露', rule: 'month', auto: true },
+    R: { name: '玫瑰蜜露', rule: 'month', auto: true, code: 'S' },
   },
   varieties: {
     P: { 1: '台灣龍眼蜜', 2: '泰國龍眼蜜', 3: '荔枝蜜', 4: '百花蜜' },
     J: { 1: '檸檬', 2: '百香果與紅葡萄柚', 3: '芒果柳橙與草莓', 4: '蜜桃與荔枝' },
     O: { 1: '苦茶油', 2: '芥花苦茶油' },
     V: { 1: '鳳梨', 2: '白柚' },
-    R: { 1: '玫瑰蜜露' },
+    R: { X1: '小批量' },
   },
-  lotModeV: 1,
+  lotModeV: 2,
 };
 
 /* ---------- schema ---------- */
@@ -124,6 +124,19 @@ async function migrate() {
     await pool.query(`UPDATE products SET cat='R', variety='1', active=TRUE
       WHERE cat='' AND (name LIKE '%玫瑰%' OR name LIKE '%花露%' OR name LIKE '%蜜露%') AND name NOT LIKE '%禮盒%'
         AND components = '[]'::jsonb`);
+  }
+  // v2: 玫瑰蜜露 small-batch lots look like HS10X1-A (letter S, variety X1)
+  if (cfg.lotModeV < 2) {
+    cfg.lotModeV = 2;
+    if (cfg.cats.R) {
+      cfg.cats.R.code = 'S';
+      cfg.cats.R.auto = true;
+      cfg.varieties = cfg.varieties || {};
+      cfg.varieties.R = { X1: '小批量' };
+    }
+    await pool.query(`UPDATE config SET data=$1 WHERE id=1`, [JSON.stringify(cfg)]);
+    await pool.query(`UPDATE products SET variety='X1' WHERE cat='R'`);
+    await pool.query(`UPDATE tasks SET variety='X1' WHERE cat='R' AND status='open'`);
   }
 }
 
@@ -337,7 +350,7 @@ function lotPrefix(cfg, { cat, variety, matDate, matArr }) {
   }
   const vars = (cfg.varieties || {})[cat] || {};
   if (!variety || !vars[variety]) throw new UserError('請選擇品種');
-  return y + cat + t.m + variety;
+  return y + (c.code || cat) + t.m + variety;
 }
 const LOT_RE = /^[A-Z0-9]{2,20}(-[A-Z0-9]{1,4})?$/;
 const LOT_FMT = '批號格式不對（英文與數字，例如 HP101-A 或 HS0913B-F）';
@@ -635,7 +648,7 @@ const NOT_PRODUCED = /空桶|塑膠桶|運費|油瓶|花粉|蜂王|蜂蠟/;
 function classify(name) {
   if (NOT_PRODUCED.test(name)) return { cat: '', variety: '', inactive: true };
   if (/禮盒/.test(name)) return { cat: '', variety: '' };
-  if (/玫瑰|花露|蜜露/.test(name)) return { cat: 'R', variety: '1' };
+  if (/玫瑰|花露|蜜露/.test(name)) return { cat: 'R', variety: 'X1' };
   if (/糖漿/.test(name)) return { cat: 'S', variety: '' };
   if (/果樂茶/.test(name)) {
     const v = /檸檬/.test(name) ? '1' : /百香果|葡萄柚/.test(name) ? '2' : /芒果|柳橙|草莓/.test(name) ? '3' : /蜜桃|荔枝/.test(name) ? '4' : '';
