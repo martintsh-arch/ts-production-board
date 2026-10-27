@@ -568,6 +568,25 @@ body.tv .tk-i em{font-size:26px}
 .fl-p{margin-top:12px;font-size:clamp(22px,2.6vw,44px);font-weight:700}
 .fl-l{display:inline-block;margin-top:20px;font:600 clamp(24px,2.6vw,42px)/1 var(--f-mono);letter-spacing:.1em;padding:12px 26px;border-radius:14px;border:3px solid #2A1600;background:rgba(255,236,190,.4)}
 @media (max-width:1100px){.tv-main{grid-template-columns:1fr}.tv-time .bd-clock b{font-size:56px}}
+
+/* ---------- delivery method ---------- */
+.mpill{display:inline-flex;align-items:center;gap:6px;font-weight:700;letter-spacing:.04em}
+.mpill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.mpill.big{font-size:14px;padding:5px 12px}
+.m-store{background:rgba(134,182,242,.14);color:#9CC6FF;box-shadow:inset 0 0 0 1.5px rgba(134,182,242,.45)}
+.m-own{background:rgba(79,208,142,.13);color:#6FE0A6;box-shadow:inset 0 0 0 1.5px rgba(79,208,142,.45)}
+.m-log{background:rgba(196,148,255,.14);color:#D2B0FF;box-shadow:inset 0 0 0 1.5px rgba(196,148,255,.45)}
+.orow-m b .mpill{margin-left:10px;font:700 12px/1 var(--f-body);vertical-align:3px;padding:4px 9px}
+.o-method{grid-column:1/-1;display:flex;flex-direction:column;gap:7px}.o-method .chips{flex-wrap:nowrap}
+.o-method .lbl{font-size:13.5px;font-weight:600;color:var(--muted)}
+.mchip{flex:1;min-width:110px;font-weight:600}
+.mchip.m-store[aria-pressed="true"]{background:#86B6F2;border-color:#86B6F2;color:#0A1420;box-shadow:0 0 0 4px rgba(134,182,242,.2)}
+.mchip.m-own[aria-pressed="true"]{background:#4FD08E;border-color:#4FD08E;color:#06190F;box-shadow:0 0 0 4px rgba(79,208,142,.2)}
+.mchip.m-log[aria-pressed="true"]{background:#C494FF;border-color:#C494FF;color:#1A0B2E;box-shadow:0 0 0 4px rgba(196,148,255,.2)}
+.mchip[aria-pressed="false"].m-store{color:#9CC6FF}.mchip[aria-pressed="false"].m-own{color:#6FE0A6}.mchip[aria-pressed="false"].m-log{color:#D2B0FF}
+.tv-tag.mt.m-store{background:rgba(134,182,242,.18);color:#9CC6FF}
+.tv-tag.mt.m-own{background:rgba(79,208,142,.16);color:#6FE0A6}
+.tv-tag.mt.m-log{background:rgba(196,148,255,.18);color:#D2B0FF}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
