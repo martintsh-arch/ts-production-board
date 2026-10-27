@@ -4,6 +4,7 @@ const express = require('express');
 const { Pool, types } = require('pg');
 types.setTypeParser(1082, (v) => v); // DATE columns stay 'YYYY-MM-DD' strings
 const APS = require('./aps');
+const GEO = require('./geo');
 
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -111,6 +112,9 @@ async function migrate() {
     ALTER TABLE customers ADD COLUMN IF NOT EXISTS suggest_lng DOUBLE PRECISION;
     ALTER TABLE customers ADD COLUMN IF NOT EXISTS suggest_src TEXT NOT NULL DEFAULT '';
     ALTER TABLE customers ADD COLUMN IF NOT EXISTS suggest_conf TEXT NOT NULL DEFAULT '';
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS geo_tried_at TIMESTAMPTZ;
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS geo_addr TEXT NOT NULL DEFAULT '';
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS geo_precision TEXT NOT NULL DEFAULT '';
     ALTER TABLE products ADD COLUMN IF NOT EXISTS no_lot BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
@@ -236,7 +240,7 @@ app.get('/api/state', wrap(async (req, res) => {
     pool.query(`SELECT * FROM tasks WHERE status = 'done' ORDER BY completed_at DESC LIMIT 2000`),
     pool.query(`SELECT * FROM products ORDER BY code NULLS LAST, name`),
     getConfig(),
-    pool.query(`SELECT id, name, code, address, lat, lng, address_suggest, suggest_src, suggest_conf FROM customers ORDER BY name`),
+    pool.query(`SELECT id, name, code, address, lat, lng, address_suggest, suggest_src, suggest_conf, geo_precision, geo_tried_at FROM customers ORDER BY name`),
     pool.query(`SELECT customer, product_id, times FROM customer_products ORDER BY times DESC, last_at DESC`),
     pool.query(`SELECT product_id, lot, MAX(completed_at) AS at FROM tasks
                 WHERE status='done' AND lot ~ '^[A-Z0-9]+-[A-Z]$' AND completed_at > now() - interval '400 days'
@@ -466,6 +470,39 @@ async function recordRun() {
   await bump();
 }
 
+/* ---------- free geocoding worker (OpenStreetMap Nominatim, ≤1 request/second) ---------- */
+let geoBusy = false, geoTimer = null;
+function geoKick(ms) { clearTimeout(geoTimer); geoTimer = setTimeout(geoTick, ms == null ? 1500 : ms); }
+async function geoTick() {
+  if (process.env.GEO_OFF === '1' || geoBusy) return;
+  geoBusy = true;
+  let next = 60000;
+  try {
+    // 1) a typed / accepted address that has no coordinates yet → locate it
+    const { rows: a } = await pool.query(`SELECT name, address FROM customers WHERE address<>'' AND lat IS NULL AND geo_addr<>address
+      ORDER BY (name IN (SELECT customer FROM tasks WHERE status='open')) DESC LIMIT 1`);
+    if (a[0]) {
+      const g = await GEO.geocodeAddress(a[0].address); // network errors fall through to the retry below
+      await pool.query(`UPDATE customers SET geo_addr=address, lat=$2, lng=$3, geo_precision=$4 WHERE name=$1`, [a[0].name, g ? g.lat : null, g ? g.lng : null, g ? g.precision : '找不到']);
+      await bump();
+      next = 1500;
+    } else {
+      // 2) customer with open orders but no address → look the shop up by name
+      const { rows: b } = await pool.query(`SELECT name FROM customers WHERE address='' AND address_suggest='' AND geo_tried_at IS NULL
+        AND name IN (SELECT customer FROM tasks WHERE status='open') LIMIT 1`);
+      if (b[0]) {
+        const hit = await GEO.searchName(b[0].name);
+        if (hit) await pool.query(`UPDATE customers SET address_suggest=$2, suggest_lat=$3, suggest_lng=$4, suggest_src=$5, suggest_conf=$6 WHERE name=$1`, [b[0].name, hit.address, hit.lat, hit.lng, hit.src, hit.conf]);
+        await pool.query(`UPDATE customers SET geo_tried_at=now() WHERE name=$1`, [b[0].name]);
+        if (hit) await bump();
+        next = 1500;
+      }
+    }
+  } catch (e) { console.error('geo', e.message); next = 120000; }
+  geoBusy = false;
+  geoKick(next);
+}
+
 /* orders */
 const UNITS = ['桶', '箱', '瓶'];
 const SHIP_METHODS = ['門市自取', '公司配送', '物流配送'];
@@ -543,6 +580,7 @@ app.post('/api/tasks/batch', wrap(async (req, res) => {
   for (const o of orders) await rememberPurchase(o.customer, o.product.id);
   if (orders[0].shipMethod === '公司配送') await saveAddress(orders[0].customer, b.address);
   await autoPlan();
+  geoKick();
   res.json({ created: orders.length, ids: orders.map((o) => o.id) });
 }));
 
@@ -698,6 +736,7 @@ app.post('/api/customers/address', wrap(async (req, res) => {
   await pool.query(`INSERT INTO customers (name, address) VALUES ($1,$2) ON CONFLICT (name) DO UPDATE SET address=EXCLUDED.address,
     lat=CASE WHEN customers.address=EXCLUDED.address THEN customers.lat END, lng=CASE WHEN customers.address=EXCLUDED.address THEN customers.lng END`, [name, address]);
   await bump();
+  geoKick();
   res.json({ ok: true, region: regionOf(address) });
 }));
 // address candidates found online (Google 地圖) — stored as suggestions only, a person must accept them
@@ -721,6 +760,12 @@ app.post('/api/customers/accept', wrap(async (req, res) => {
   const { rowCount } = await pool.query(`UPDATE customers SET address=address_suggest, lat=suggest_lat, lng=suggest_lng, address_suggest='', suggest_src='', suggest_conf='' WHERE name=$1 AND address_suggest<>''`, [name]);
   if (!rowCount) throw new UserError('找不到這個客戶的建議地址');
   await bump();
+  res.json({ ok: true });
+}));
+app.post('/api/customers/geo-retry', wrap(async (req, res) => {
+  const name = str(req.body && req.body.name, 100);
+  await pool.query(`UPDATE customers SET geo_tried_at=NULL, geo_addr='' WHERE name=$1`, [name]);
+  geoKick();
   res.json({ ok: true });
 }));
 app.post('/api/customers/reject', wrap(async (req, res) => {
@@ -1151,5 +1196,5 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/app.js', (req, res) => res.sendFile(path.join(__dirname, 'app.js')));
 
 migrate()
-  .then(() => app.listen(PORT, () => console.log('生產看板已啟動，port ' + PORT)))
+  .then(() => app.listen(PORT, () => { console.log('生產看板已啟動，port ' + PORT); geoKick(5000); }))
   .catch((e) => { console.error('資料庫初始化失敗：', e.message); process.exit(1); });

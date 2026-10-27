@@ -248,7 +248,7 @@ function renderPlan(){
   Object.keys(p.logistics).sort().forEach(d=>tips.push((d===p.today?'今天':md(d))+' 有 <b>'+p.logistics[d]+' 筆物流配送</b>，已排在同日最前面，請在物流收件前完成。'));
   if(p.noMethod)tips.push('<b>'+p.noMethod+' 筆</b>三天內的訂單還沒選出貨方式，到「未完成訂單」按修改補上，排程會更準。');
   const custAddr={};S.customers.forEach(c=>custAddr[c.name]=c.address||'');
-  const noAddr=p.noAddr.map(c=>'<div class="ai-addr"><b>'+esc(c)+'</b><input data-aiaddr="'+esc(c)+'" placeholder="例：高雄市三民區民族一路 100 號" value="'+esc(custAddr[c]||'')+'"><button type="button" data-aiaddrsave="'+esc(c)+'">儲存</button></div>').join('');
+  const noAddr=p.noAddr.map(c=>'<div class="ai-addr"><b>'+esc(c)+'</b><input data-aiaddr="'+esc(c)+'" placeholder="例：高雄市三民區民族一路 100 號" value="'+esc(custAddr[c]||'')+'"><button type="button" data-aiaddrsave="'+esc(c)+'">儲存</button>'+geoState(c)+'</div>').join('');
   const h='<div class="scrim" id="aiscrim"><div class="sheet ai-sheet" role="dialog" aria-label="智慧排程建議">'+
     '<div class="ai-hd"><span class="ai-core big" aria-hidden="true"><i></i><i></i><b>AI</b></span><div><div class="pname">智慧排程建議</div><p class="hint">依出貨日、同原料同批號合併、出貨方式（物流 → 公司配送 → 自取）自動計算</p></div><button type="button" class="ai-x" id="aiclose" aria-label="關閉">×</button></div>'+
     '<button type="button" class="ai-auto" id="aiauto" aria-pressed="'+!!p.auto+'"><span class="ai-sw" aria-hidden="true"><i></i></span><span><b>自動排程　'+(p.auto?'開啟中':'已關閉')+'</b><small>'+(p.auto?'有新訂單或改單時，系統會自動重排看板順序。想手動拖曳排序，請先關閉。':'打開後，有新訂單或改單時，系統會自動照下面的建議重排看板。')+'</small></span></button>'+
@@ -281,6 +281,10 @@ function etaTag(t){const p=S.aps&&S.aps.tasks&&S.aps.tasks[t.id];if(!p||!p.day||
 /* ---------- operator-friendly explanations ---------- */
 /* ---------- address suggestions found online: a person confirms before they are used ---------- */
 function stopIdx(t,D){const r=((S.plan&&S.plan.routes)||[]).find(x=>x.date===D);if(!r)return 99;const i=r.stops.findIndex(s=>s.region!=='未填地址'&&s.customers.includes(t.customer));return i<0?99:i}
+function geoState(name){const c=S.customers.find(x=>x.name===name)||{};
+  if(c.address_suggest)return '<small class="geo-st">網路上找到候選地址，見下方「請確認」</small>';
+  if(!c.geo_tried_at)return '<small class="geo-st">⏳ 系統正在網路上自動搜尋（免費地圖，每秒查一筆）</small>';
+  return '<small class="geo-st">網路上找不到，請手動輸入 <button type="button" class="linkbtn" data-georetry="'+esc(name)+'">再查一次</button></small>'}
 function addrSuggestPanel(onlyOpen){
   const openNames=new Set(S.open.map(t=>t.customer));
   const list=S.customers.filter(c=>c.address_suggest&&(!onlyOpen||openNames.has(c.name)));
@@ -292,6 +296,7 @@ function addrSuggestPanel(onlyOpen){
 }
 document.addEventListener('click',async e=>{
   const ok=e.target.closest('[data-sgok]'),no=e.target.closest('[data-sgno]');
+  const gr=e.target.closest('[data-georetry]');if(gr){await act(()=>api('POST','/api/customers/geo-retry',{name:gr.dataset.georetry}),'已重新排入搜尋');return}
   if(ok){await act(()=>api('POST','/api/customers/accept',{name:ok.dataset.sgok}),'已採用地址，配送路線已更新');if(S.planOpen)renderPlan();return}
   if(no){await act(()=>api('POST','/api/customers/reject',{name:no.dataset.sgno}),'已移除建議，請在訂單裡輸入正確地址');if(S.planOpen)renderPlan();return}
 });
