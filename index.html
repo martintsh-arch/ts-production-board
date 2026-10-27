@@ -430,6 +430,59 @@ td.mono{color:var(--muted)}
 .al-btn{min-height:96px!important;font-size:32px!important;letter-spacing:.16em!important;background:linear-gradient(180deg,#FFD84A,#FF9F0A)!important;color:#1A0800!important;box-shadow:0 7px 0 #8A4A00,0 0 50px rgba(255,194,26,.6)!important;animation:btnpulse 1s ease-in-out infinite}
 @keyframes btnpulse{50%{transform:scale(1.02)}}
 @media (max-width:760px){.al-tape{height:46px}.al-tape span{font-size:20px}.al-beacon{width:52px;height:52px}.al-timer b{font-size:44px}.al-row b{font-size:22px!important}.al-row em{font-size:40px!important}.al-btn{font-size:22px!important;min-height:76px!important}.al-box{padding:18px 16px 20px}}
+
+/* ---------- showpiece layer ---------- */
+#fx{position:fixed;inset:0;z-index:0;pointer-events:none}
+main{position:relative;z-index:1}
+body::after{content:"";position:fixed;left:0;right:0;top:-30vh;height:30vh;z-index:0;pointer-events:none;
+  background:linear-gradient(180deg,transparent,rgba(242,179,61,.05) 70%,rgba(255,212,126,.12) 98%,transparent);animation:scan 9s linear infinite}
+@keyframes scan{to{transform:translateY(160vh)}}
+.ticker{display:none}
+body.bd .ticker{display:flex;align-items:center;gap:0;height:46px;margin:0 0 18px;border-radius:14px;overflow:hidden;background:linear-gradient(90deg,#0B1511,#101C16);border:1px solid var(--line2);box-shadow:inset 0 0 30px rgba(0,0,0,.6)}
+.tk-live{flex:none;display:flex;align-items:center;gap:8px;height:100%;padding:0 18px;font-weight:900;letter-spacing:.2em;color:#1A1405;background:var(--honey);z-index:1;box-shadow:8px 0 20px rgba(0,0,0,.5)}
+.tk-live i{width:9px;height:9px;border-radius:50%;background:#C21800;box-shadow:0 0 0 0 rgba(194,24,0,.6);animation:liveR 1.2s infinite}
+@keyframes liveR{70%{box-shadow:0 0 0 9px rgba(194,24,0,0)}100%{box-shadow:0 0 0 0 rgba(194,24,0,0)}}
+.tk-track{flex:1;overflow:hidden;height:100%;mask-image:linear-gradient(90deg,transparent,#000 4%,#000 96%,transparent)}
+.tk-move{display:flex;width:max-content;height:100%;align-items:center;animation:tk 40s linear infinite}
+@keyframes tk{to{transform:translateX(-50%)}}
+.tk-i{display:inline-flex;align-items:center;gap:8px;padding:0 34px;font-size:15.5px;color:var(--ink);white-space:nowrap;position:relative}
+.tk-i::after{content:"";position:absolute;right:0;width:7px;height:8px;background:var(--honey);clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);opacity:.7}
+.tk-i em{font:600 19px/1 var(--f-num);font-style:normal;color:var(--leaf)}
+.tk-i b{font-family:var(--f-mono);color:var(--honey-2);font-weight:600}
+.tk-n{color:var(--honey-2);font-weight:700}
+.tk-u{color:#fff;font-weight:900;background:var(--ember);height:100%;padding:0 22px;animation:pulse 1s infinite}
+.bd-tline{display:flex;align-items:flex-end;gap:26px;flex-wrap:wrap}
+.bd-clock{display:flex;align-items:flex-start;gap:4px;line-height:.85;color:var(--honey-2);text-shadow:0 0 24px rgba(242,179,61,.45)}
+.bd-clock b{font:700 64px/.85 var(--f-num);letter-spacing:.01em}
+.bd-clock b i{font-style:normal;animation:blink 1s steps(2,jump-none) infinite}
+.bd-clock s{text-decoration:none;font:600 26px/1 var(--f-num);color:var(--honey);margin-top:4px;opacity:.85}
+@keyframes blink{50%{opacity:.25}}
+.hv .rolling{color:#fff;text-shadow:0 0 18px currentColor}
+.hex{transition:transform .25s}
+.hex:hover{transform:translateY(-3px)}
+/* chasing honey light around the card being produced */
+@property --ang{syntax:'<angle>';inherits:false;initial-value:0deg}
+.card.next::after{content:"";position:absolute;inset:0;border-radius:inherit;padding:2.5px;pointer-events:none;
+  background:conic-gradient(from var(--ang),transparent 0 62%,rgba(255,212,126,.15) 70%,#FFD47E 82%,#fff 85%,#F2B33D 88%,transparent 92%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:chase 3.2s linear infinite}
+.card.urgent.next::after{background:conic-gradient(from var(--ang),transparent 0 60%,#FF6B4E 80%,#fff 84%,#FF6B4E 88%,transparent 92%)}
+@keyframes chase{to{--ang:360deg}}
+.card.next .c-qty b{text-shadow:0 0 40px rgba(242,179,61,.35)}
+.card.next .cust{text-shadow:0 0 30px rgba(242,179,61,.3)}
+.list>.card:not(.next){transition:transform .2s,border-color .2s}
+.list>.card:not(.next):hover{transform:translateY(-3px);border-color:var(--line2)}
+/* completion shockwave */
+.cel-fx{position:absolute;left:50%;top:50%;width:0;height:0;pointer-events:none}
+.cel-ring{position:absolute;left:-60px;top:-60px;width:120px;height:120px;border-radius:50%;border:4px solid var(--honey);opacity:0;animation:ring 1.2s cubic-bezier(.1,.7,.3,1) forwards}
+.cel-ring.r2{animation-delay:.15s;border-color:var(--honey-2)} .cel-ring.r3{animation-delay:.3s;border-color:var(--leaf);border-width:3px}
+@keyframes ring{0%{opacity:1;transform:scale(.3)}100%{opacity:0;transform:scale(9)}}
+.cel-rays{position:absolute;left:-60vmax;top:-60vmax;width:120vmax;height:120vmax;opacity:0;
+  background:repeating-conic-gradient(from 0deg,rgba(242,179,61,.16) 0 6deg,transparent 6deg 18deg);mask-image:radial-gradient(circle,#000 10%,transparent 60%);
+  animation:rays 2.4s ease-out forwards}
+@keyframes rays{0%{opacity:0;transform:rotate(0) scale(.6)}20%{opacity:1}100%{opacity:0;transform:rotate(40deg) scale(1.1)}}
+.celebrate{background:radial-gradient(circle,rgba(242,179,61,.18),rgba(2,6,4,.82) 60%)}
+.cel-card{animation:pop .5s cubic-bezier(.2,1.5,.4,1)}
+@media (max-width:760px){.bd-clock b{font-size:44px}.bd-clock s{font-size:18px}body.bd .ticker{height:40px}.tk-i{font-size:14px;padding:0 22px}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
@@ -444,7 +497,9 @@ td.mono{color:var(--muted)}
   </nav>
   <div class="top-r"><button type="button" id="bell" class="bell"></button><div class="clock" id="clock"></div></div>
 </header>
+<canvas id="fx" aria-hidden="true"></canvas>
 <main id="main">
+  <div id="ticker" class="ticker" aria-label="即時動態"></div>
   <p class="status" id="status">連線中…</p>
   <section id="v-board"></section>
   <section id="v-orders" hidden></section>

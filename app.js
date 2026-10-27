@@ -20,6 +20,37 @@ function setStatus(m){$('#status').textContent=m}
 const WD='日一二三四五六';
 function tick(){const d=new Date();$('#clock').innerHTML='<b>'+pad(d.getHours())+':'+pad(d.getMinutes())+'</b><small>'+(d.getMonth()+1)+'/'+d.getDate()+' 週'+WD[d.getDay()]+'</small>'}
 tick();setInterval(tick,15000);
+function clockHTML(){const d=new Date();return '<b>'+pad(d.getHours())+'<i>:</i>'+pad(d.getMinutes())+'</b><s>'+pad(d.getSeconds())+'</s>'}
+setInterval(()=>{const c=document.getElementById('bdclock');if(c&&!document.hidden)c.innerHTML=clockHTML()},1000);
+/* KPI numbers roll from their previous value */
+const PREV={};
+function countUp(){document.querySelectorAll('[data-count]').forEach(el=>{const k=el.dataset.count,to=+el.textContent,from=PREV[k];PREV[k]=to;
+  if(from==null||from===to||isNaN(to))return;const t0=performance.now(),dur=900;el.classList.add('rolling');
+  const step=t=>{const p=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-p,3);el.textContent=Math.round(from+(to-from)*e);if(p<1)requestAnimationFrame(step);else el.classList.remove('rolling')};requestAnimationFrame(step)})}
+/* live ticker on the board */
+let TK='';
+function updateTicker(doneToday){const box=document.getElementById('ticker');if(!box)return;
+  const items=[];const urg=S.open.filter(t=>t.urgent);
+  urg.forEach(t=>items.push('<span class="tk-i tk-u">緊急單｜'+esc(t.customer)+'　'+esc(shortName(t.productName))+' '+num(t.qty)+esc(t.unit||'')+'</span>'));
+  doneToday.slice(0,12).forEach(t=>items.push('<span class="tk-i"><em>'+fmtTime(t.completedAt).split(' ')[1]+'</em>'+esc(t.customer)+'　'+esc(shortName(t.productName))+' '+num(t.qty)+esc(t.unit||'')+'　<b>'+esc(t.lot)+'</b>　完成</span>'));
+  const nx=boardTasks()[0];if(nx)items.unshift('<span class="tk-i tk-n">現在生產｜'+esc(nx.customer)+'　'+esc(shortName(nx.productName))+' '+num(nx.qty)+esc(nx.unit||'')+'</span>');
+  if(!doneToday.length)items.push('<span class="tk-i">今天還沒有完成紀錄，加油！</span>');
+  const html=items.join('');if(html===TK)return;TK=html;
+  const dur=Math.max(24,items.length*7);
+  box.innerHTML='<span class="tk-live"><i></i>即時</span><div class="tk-track"><div class="tk-move" style="animation-duration:'+dur+'s">'+html+html+'</div></div>'}
+/* ambient honeycomb particles */
+const FX={run(){const c=document.getElementById('fx');if(!c||!c.getContext||matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  const g=c.getContext('2d');let W,H,ps=[];const dpr=Math.min(2,window.devicePixelRatio||1);
+  const size=()=>{W=c.width=innerWidth*dpr;H=c.height=innerHeight*dpr;c.style.width=innerWidth+'px';c.style.height=innerHeight+'px'};size();addEventListener('resize',size);
+  const N=innerWidth<760?16:34;for(let i=0;i<N;i++)ps.push({x:Math.random(),y:Math.random(),r:6+Math.random()*22,v:.00006+Math.random()*.00018,a:Math.random()*6.28,s:(Math.random()-.5)*.002,o:.05+Math.random()*.18,tw:Math.random()*6.28});
+  const hexP=(x,y,r,a)=>{g.beginPath();for(let k=0;k<6;k++){const t=a+k*Math.PI/3;g.lineTo(x+r*Math.cos(t),y+r*Math.sin(t))}g.closePath()};
+  let last=0;const loop=t=>{requestAnimationFrame(loop);if(document.hidden||t-last<40)return;last=t;g.clearRect(0,0,W,H);
+    for(const p of ps){p.y-=p.v*40;p.a+=p.s;p.tw+=.03;if(p.y<-.05){p.y=1.05;p.x=Math.random()}
+      const al=p.o*(.6+.4*Math.sin(p.tw)),X=p.x*W,Y=p.y*H,R=p.r*dpr;
+      hexP(X,Y,R,p.a);g.strokeStyle='rgba(242,179,61,'+al+')';g.lineWidth=1.4*dpr;g.stroke();
+      if(p.r<10){g.fillStyle='rgba(255,212,126,'+(al*.8)+')';g.fill()}}};
+  requestAnimationFrame(loop)}};
+FX.run();
 
 /* ---------- sound ---------- */
 const Snd={ctx:null,on:store.get('tsb_snd')!=='0',
@@ -93,7 +124,7 @@ document.addEventListener('click',e=>{if(e.target.closest('#alack')){urgentPendi
 function celebrate(title,sub,lots){
   const box=document.createElement('div');box.className='celebrate';box.setAttribute('role','status');
   let hex='';for(let i=0;i<16;i++){const ang=(i/16)*Math.PI*2+Math.random()*.3,dist=130+Math.random()*90;hex+='<i style="--x:'+Math.round(Math.cos(ang)*dist)+'px;--y:'+Math.round(Math.sin(ang)*dist)+'px;--d:'+(Math.random()*.15).toFixed(2)+'s;--s:'+(0.6+Math.random()*0.8).toFixed(2)+'"></i>'}
-  box.innerHTML='<div class="cel-card"><div class="cel-burst" aria-hidden="true">'+hex+'</div><svg class="cel-check" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="29"/><path d="M19 33l9 9 18-19"/></svg>'+
+  box.innerHTML='<div class="cel-fx" aria-hidden="true"><i class="cel-ring"></i><i class="cel-ring r2"></i><i class="cel-ring r3"></i><i class="cel-rays"></i></div><div class="cel-card"><div class="cel-burst" aria-hidden="true">'+hex+'</div><svg class="cel-check" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="29"/><path d="M19 33l9 9 18-19"/></svg>'+
     '<div class="cel-kicker">完成生產</div><div class="cel-title">'+esc(title)+'</div><div class="cel-sub">'+esc(sub)+'</div>'+(lots&&lots.length?'<div class="cel-lots">'+lots.map(l=>'<span>'+esc(l)+'</span>').join('')+'</div>':'')+'</div>';
   document.body.appendChild(box);Snd.play('done');
   const close=()=>{if(box.classList.contains('out'))return;box.classList.add('out');setTimeout(()=>box.remove(),320)};
@@ -199,15 +230,15 @@ function renderBoard(){
   const dueDone=doneToday.filter(t=>t.shipDate<=td).length,dueOpen=overL.length+todayL.length;
   const rate=dueDone+dueOpen?Math.round(dueDone*100/(dueDone+dueOpen)):null;
   const now=new Date(),dueLeft=overL.length+todayL.length;
-  const hex=(cls,v,l,sub)=>'<div class="hex '+cls+'"><div class="hv">'+v+'</div><div class="hl">'+l+'</div>'+(sub?'<div class="hs">'+esc(sub)+'</div>':'')+'</div>';
-  let h='<section class="bd-hero"><div class="bd-title"><h1>今日生產</h1><p>'+(now.getMonth()+1)+' 月 '+now.getDate()+' 日 週'+WD[now.getDay()]+'　'+
+  const hex=(cls,v,l,sub)=>'<div class="hex '+cls+'"><div class="hv"><span data-count="'+l+'">'+v+'</span></div><div class="hl">'+l+'</div>'+(sub?'<div class="hs">'+esc(sub)+'</div>':'')+'</div>';
+  let h='<section class="bd-hero"><div class="bd-title"><div class="bd-tline"><h1>今日生產</h1><div class="bd-clock" id="bdclock" aria-label="現在時間">'+clockHTML()+'</div></div><p>'+(now.getMonth()+1)+' 月 '+now.getDate()+' 日 週'+WD[now.getDay()]+'　'+
     (list.length?'排程中 <b>'+list.length+' 筆</b>'+(dueLeft?'，今天要出貨的還有 <b>'+dueLeft+' 筆</b>':'，今天要出貨的都做完了'):'目前沒有待生產項目')+'</p></div>'+
     '<div class="hexes" role="group" aria-label="今日指標">'+
-    hex('','<span class="mono-n">'+list.length+'</span>','待生產',unitSum(list))+
+    hex('',list.length,'待生產',unitSum(list))+
     hex(todayL.length?'h-warn':'',todayL.length,'今日出貨',todayL.length?unitSum(todayL):'已清空')+
     hex(overL.length?'h-bad':'',overL.length,'逾期',overL.length?'請優先處理':'無')+
     hex('h-ok',doneToday.length,'今日完成',doneToday.length?unitSum(doneToday):'')+
-    '<div class="hex h-rate'+((rate||0)<55?' low':'')+'" style="--fill:'+(rate||0)+'%" role="img" aria-label="今日出貨達成率 '+(rate==null?'無資料':rate+'%')+'"><span class="fill"></span><div class="hv">'+(rate==null?'—':rate+'<i>%</i>')+'</div><div class="hl">出貨達成率</div></div>'+
+    '<div class="hex h-rate'+((rate||0)<55?' low':'')+'" style="--fill:'+(rate||0)+'%" role="img" aria-label="今日出貨達成率 '+(rate==null?'無資料':rate+'%')+'"><span class="fill"></span><div class="hv">'+(rate==null?'—':'<span data-count="rate">'+rate+'</span><i>%</i>')+'</div><div class="hl">出貨達成率</div></div>'+
     '</div></section>';
   h+='<div class="bd-head"><div><b>生產排程</b><span>依序生產，拖曳 ⠿ 可調整順序</span></div><div class="bd-act">'+
     (S.pick?'':'<button type="button" id="pickstart" class="pick-start">'+IC.pick+'多筆一起完成（同一鍋）</button>')+
@@ -231,7 +262,7 @@ function renderBoard(){
       '<span class="d-main"><b>'+esc(t.customer)+'</b><span>'+esc(t.productName)+'　'+qtyU(t)+'</span></span>'+
       '<span class="d-lot">'+esc(t.lot)+'</span><span class="d-op">'+esc(t.operator)+'</span>'+
       (t.contents?'<span></span>':'<button type="button" data-blot="'+t.id+'">改批號</button>')+'</div>').join('')+'</div>';
-  v.innerHTML=h;
+  v.innerHTML=h;countUp();updateTicker(doneToday);
   const el=$('#blist');
   if(el&&window.Sortable&&!S.pick)Sortable.create(el,{handle:'.grip',animation:150,ghostClass:'ghost-sort',
     onStart:()=>{dragging=true},
