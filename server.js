@@ -104,6 +104,13 @@ async function migrate() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     ALTER TABLE customers ADD COLUMN IF NOT EXISTS address TEXT NOT NULL DEFAULT '';
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION;
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION;
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS address_suggest TEXT NOT NULL DEFAULT '';
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS suggest_lat DOUBLE PRECISION;
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS suggest_lng DOUBLE PRECISION;
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS suggest_src TEXT NOT NULL DEFAULT '';
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS suggest_conf TEXT NOT NULL DEFAULT '';
     ALTER TABLE products ADD COLUMN IF NOT EXISTS no_lot BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
@@ -229,7 +236,7 @@ app.get('/api/state', wrap(async (req, res) => {
     pool.query(`SELECT * FROM tasks WHERE status = 'done' ORDER BY completed_at DESC LIMIT 2000`),
     pool.query(`SELECT * FROM products ORDER BY code NULLS LAST, name`),
     getConfig(),
-    pool.query(`SELECT id, name, code, address FROM customers ORDER BY name`),
+    pool.query(`SELECT id, name, code, address, lat, lng, address_suggest, suggest_src, suggest_conf FROM customers ORDER BY name`),
     pool.query(`SELECT customer, product_id, times FROM customer_products ORDER BY times DESC, last_at DESC`),
     pool.query(`SELECT product_id, lot, MAX(completed_at) AS at FROM tasks
                 WHERE status='done' AND lot ~ '^[A-Z0-9]+-[A-Z]$' AND completed_at > now() - interval '400 days'
@@ -258,7 +265,10 @@ app.get('/api/state', wrap(async (req, res) => {
 
 /* ---------- smart scheduling: merge same batch, earliest ship date first, logistics → own delivery → pickup ---------- */
 const METHOD_RANK = { '物流配送': 0, '公司配送': 1, '': 1, '門市自取': 2 };
-const MERGE_DAYS = 2; // pull a later order forward to share a batch when it ships within this many days
+const MERGE_DAYS = 2;
+const DEPOT = { name: '統香蜂蜜（高雄市三民區重慶街67號）', lat: 22.64359, lng: 120.30189 };
+const FAR_KM = 40;
+function kmBetween(a, b) { const R = 6371, r = Math.PI / 180, dLa = (b[0] - a[0]) * r, dLo = (b[1] - a[1]) * r; const h = Math.sin(dLa / 2) ** 2 + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); } // pull a later order forward to share a batch when it ships within this many days
 const addDaysStr = (s, n) => { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 function regionOf(addr) {
   const a = String(addr || '').replace(/\s/g, '').replace(/^\d{3,6}/, '').replace(/台/g, '臺');
@@ -341,11 +351,31 @@ function smartPlan(open, customers, cfg) {
     const g = day[r] = day[r] || { region: r, customers: {}, n: 0 };
     g.customers[t.customer] = (g.customers[t.customer] || 0) + 1; g.n++;
   });
-  const routes = Object.keys(days).sort().map((d) => ({
-    date: d,
-    stops: Object.values(days[d]).map((g) => ({ region: g.region, customers: Object.keys(g.customers), orders: g.n }))
-      .sort((a, b) => (a.region === '未填地址') - (b.region === '未填地址') || a.region.localeCompare(b.region, 'zh-Hant')),
-  }));
+  // stop order: nearest-neighbour from the factory on straight-line distance (an estimate, not driving time)
+  const geo = {}; customers.forEach((c) => { if (c.lat != null && c.lng != null && c.address) geo[c.name] = [+c.lat, +c.lng]; });
+  const depot = (cfg && cfg.depot) || DEPOT;
+  const routes = Object.keys(days).sort().map((d) => {
+    const stops = Object.values(days[d]).map((g) => {
+      const pts = Object.keys(g.customers).map((n) => geo[n]).filter(Boolean);
+      const c = pts.length ? [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length] : null;
+      return { region: g.region, customers: Object.keys(g.customers), orders: g.n, at: c };
+    });
+    const known = stops.filter((x) => x.at && x.region !== '未填地址'), rest2 = stops.filter((x) => !(x.at && x.region !== '未填地址'));
+    const ordered = []; let cur = [depot.lat, depot.lng], total = 0;
+    while (known.length) {
+      let bi = 0, bd = Infinity;
+      known.forEach((x, i) => { const dd = kmBetween(cur, x.at); if (dd < bd) { bd = dd; bi = i; } });
+      const x = known.splice(bi, 1)[0]; x.km = Math.round(bd * 10) / 10; total += bd; cur = x.at; ordered.push(x);
+    }
+    rest2.sort((a, b) => (a.region === '未填地址') - (b.region === '未填地址') || a.region.localeCompare(b.region, 'zh-Hant'));
+    return { date: d, stops: ordered.concat(rest2).map((x) => ({ region: x.region, customers: x.customers, orders: x.orders, km: x.km })), km: Math.round(total) };
+  });
+  // far own-truck customers → suggest logistics instead
+  const far = [...new Set(own.map((t) => t.customer))].filter((n) => geo[n] && kmBetween([depot.lat, depot.lng], geo[n]) > FAR_KM)
+    .map((n) => ({ customer: n, km: Math.round(kmBetween([depot.lat, depot.lng], geo[n])) }));
+  // tell operators which delivery stop an order belongs to
+  routes.forEach((r) => r.stops.forEach((st, i) => { if (st.region === '未填地址') return;
+    own.filter((t) => eff(t) === r.date && st.customers.includes(t.customer)).forEach((t) => { (why[t.id] = why[t.id] || []).push('配送第 ' + (i + 1) + ' 站（' + st.region.replace(/^.{2}[市縣]/, '') + '）'); }); }));
   // same customer, different nearby days → one trip
   const byCust = {};
   own.forEach((t) => { (byCust[t.customer] = byCust[t.customer] || new Set()).add(eff(t)); });
@@ -358,12 +388,12 @@ function smartPlan(open, customers, cfg) {
   const logistics = {};
   open.filter((t) => t.ship_method === '物流配送' && eff(t) <= horizon).forEach((t) => { logistics[eff(t)] = (logistics[eff(t)] || 0) + 1; });
   const noMethod = open.filter((t) => !t.ship_method && eff(t) <= horizon).length;
-  return { order, moved, why, merges, routes, combine, sameArea, noAddr, logistics, noMethod, auto: !!(cfg && cfg.autoPlan), today: td };
+  return { order, moved, why, far, merges, routes, combine, sameArea, noAddr, logistics, noMethod, auto: !!(cfg && cfg.autoPlan), today: td };
 }
 async function applyPlan(client) {
   const db = client || pool;
   const [{ rows: open }, { rows: customers }, cfg] = await Promise.all([
-    db.query(`SELECT * FROM tasks WHERE status='open'`), db.query(`SELECT name, address FROM customers`), getConfig(client)]);
+    db.query(`SELECT * FROM tasks WHERE status='open'`), db.query(`SELECT name, address, lat, lng FROM customers`), getConfig(client)]);
   const p = smartPlan(open, customers, cfg);
   pendingUndo = open.map((t) => [t.id, t.sort_order]);
   for (let i = 0; i < p.order.length; i++) await db.query(`UPDATE tasks SET sort_order=$1 WHERE id=$2 AND status='open'`, [(i + 1) * 10, p.order[i]]);
@@ -375,7 +405,8 @@ async function autoPlan() {
 async function saveAddress(customer, address) {
   address = str(address, 200);
   if (!customer || !address) return;
-  await pool.query(`INSERT INTO customers (name, address) VALUES ($1,$2) ON CONFLICT (name) DO UPDATE SET address=EXCLUDED.address`, [customer, address]);
+  await pool.query(`INSERT INTO customers (name, address) VALUES ($1,$2) ON CONFLICT (name) DO UPDATE SET address=EXCLUDED.address,
+    lat=CASE WHEN customers.address=EXCLUDED.address THEN customers.lat END, lng=CASE WHEN customers.address=EXCLUDED.address THEN customers.lng END`, [customer, address]);
 }
 
 /* ---------- APS: finite-capacity schedule, run log, undo ---------- */
@@ -386,7 +417,7 @@ async function computeAps(db, given) {
   const [open, done, customers, cfg] = given || await Promise.all([
     db.query(`SELECT * FROM tasks WHERE status='open' ORDER BY urgent DESC, urgent_at, sort_order, id`).then((r) => r.rows),
     db.query(`SELECT cat, unit, qty, started_at, completed_at FROM tasks WHERE status='done' AND started_at IS NOT NULL ORDER BY completed_at DESC LIMIT 1000`).then((r) => r.rows),
-    db.query(`SELECT name, address FROM customers`).then((r) => r.rows),
+    db.query(`SELECT name, address, lat, lng FROM customers`).then((r) => r.rows),
     getConfig(),
   ]);
   const tp = taipeiParts();
@@ -664,9 +695,39 @@ app.post('/api/customers/address', wrap(async (req, res) => {
   const b = req.body || {};
   const name = str(b.name, 100), address = str(b.address, 200);
   if (!name) throw new UserError('缺少客戶名稱');
-  await pool.query(`INSERT INTO customers (name, address) VALUES ($1,$2) ON CONFLICT (name) DO UPDATE SET address=EXCLUDED.address`, [name, address]);
+  await pool.query(`INSERT INTO customers (name, address) VALUES ($1,$2) ON CONFLICT (name) DO UPDATE SET address=EXCLUDED.address,
+    lat=CASE WHEN customers.address=EXCLUDED.address THEN customers.lat END, lng=CASE WHEN customers.address=EXCLUDED.address THEN customers.lng END`, [name, address]);
   await bump();
   res.json({ ok: true, region: regionOf(address) });
+}));
+// address candidates found online (Google 地圖) — stored as suggestions only, a person must accept them
+app.post('/api/customers/suggest', wrap(async (req, res) => {
+  const list = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+  let n = 0;
+  for (const it of list.slice(0, 200)) {
+    const name = str(it.name, 100), address = str(it.address, 200);
+    if (!name || !address) continue;
+    const lat = Number.isFinite(+it.lat) ? +it.lat : null, lng = Number.isFinite(+it.lng) ? +it.lng : null;
+    await pool.query(`INSERT INTO customers (name, address_suggest, suggest_lat, suggest_lng, suggest_src, suggest_conf) VALUES ($1,$2,$3,$4,$5,$6)
+      ON CONFLICT (name) DO UPDATE SET address_suggest=EXCLUDED.address_suggest, suggest_lat=EXCLUDED.suggest_lat, suggest_lng=EXCLUDED.suggest_lng, suggest_src=EXCLUDED.suggest_src, suggest_conf=EXCLUDED.suggest_conf`,
+      [name, address, lat, lng, str(it.src, 120), str(it.conf, 10)]);
+    n++;
+  }
+  await bump();
+  res.json({ ok: true, n });
+}));
+app.post('/api/customers/accept', wrap(async (req, res) => {
+  const name = str(req.body && req.body.name, 100);
+  const { rowCount } = await pool.query(`UPDATE customers SET address=address_suggest, lat=suggest_lat, lng=suggest_lng, address_suggest='', suggest_src='', suggest_conf='' WHERE name=$1 AND address_suggest<>''`, [name]);
+  if (!rowCount) throw new UserError('找不到這個客戶的建議地址');
+  await bump();
+  res.json({ ok: true });
+}));
+app.post('/api/customers/reject', wrap(async (req, res) => {
+  const name = str(req.body && req.body.name, 100);
+  await pool.query(`UPDATE customers SET address_suggest='', suggest_src='', suggest_conf='' WHERE name=$1`, [name]);
+  await bump();
+  res.json({ ok: true });
 }));
 
 app.post('/api/lot-preview', wrap(async (req, res) => {

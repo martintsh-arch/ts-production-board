@@ -240,9 +240,10 @@ function renderPlan(){
       '<div class="ai-cs">'+m.products.slice(0,4).map(x=>'<span>'+esc(shortName(x))+'</span>').join('')+'</div>'+
       '<p>'+(m.shareLot?'同原料、同批號，可一次備料一起灌裝，省下換線與清洗時間。':'同一個品項，建議連續生產。')+(m.pulled?' 其中 <b>'+m.pulled+' 張</b>原本較晚出貨（'+m.dates.map(md).join('、')+'），建議提前一起做。':'')+'</p>'+
       (m.shareLot&&onBoard?'<button type="button" class="ai-act" data-aipick="'+i+'">這幾張一起完成（同一鍋）</button>':'')+'</div>'}).join('');
-  const routes=p.routes.map(r=>'<div class="ai-route"><div class="ai-rd">'+(r.date===p.today?'今天':md(r.date))+'</div><div class="ai-stops">'+r.stops.map((s,i)=>'<div class="ai-stop'+(s.region==='未填地址'?' na':'')+'"><span class="ai-pin">'+(s.region==='未填地址'?'?':i+1)+'</span><div><b>'+esc(s.region)+'</b><small>'+s.customers.map(esc).join('、')+'</small></div></div>').join('<i class="ai-arrow" aria-hidden="true"></i>')+'</div></div>').join('');
+  const routes=p.routes.map(r=>'<div class="ai-route"><div class="ai-rd">'+(r.date===p.today?'今天':md(r.date))+'</div><div class="ai-stops">'+r.stops.map((s,i)=>'<div class="ai-stop'+(s.region==='未填地址'?' na':'')+'"><span class="ai-pin">'+(s.region==='未填地址'?'?':i+1)+'</span><div><b>'+esc(s.region)+'</b><small>'+s.customers.map(esc).join('、')+(s.km!=null?'・約 '+s.km+' 公里':'')+'</small></div></div>').join('<i class="ai-arrow" aria-hidden="true"></i>')+'</div>'+(r.km?'<div class="ai-km">全程直線約 '+r.km+' 公里</div>':'')+'</div>').join('');
   const tips=[];
   p.combine.forEach(c=>tips.push('<b>'+esc(c.customer)+'</b> 有 '+c.dates.map(md).join('、')+' 多張公司配送單，建議合併成同一趟送。'));
+  (p.far||[]).forEach(c=>tips.push('<b>'+esc(c.customer)+'</b> 離工廠直線約 '+c.km+' 公里，自己送很花時間，<b>建議改物流配送</b>。'));
   p.sameArea.forEach(c=>tips.push('<b>'+esc(c.region)+'</b> 在 '+c.dates.map(md).join('、')+' 都要送，若客戶能接受，可排同一趟。'));
   Object.keys(p.logistics).sort().forEach(d=>tips.push((d===p.today?'今天':md(d))+' 有 <b>'+p.logistics[d]+' 筆物流配送</b>，已排在同日最前面，請在物流收件前完成。'));
   if(p.noMethod)tips.push('<b>'+p.noMethod+' 筆</b>三天內的訂單還沒選出貨方式，到「未完成訂單」按修改補上，排程會更準。');
@@ -255,7 +256,7 @@ function renderPlan(){
     (p.moved?'<button type="button" class="primary ai-apply" id="aiapply">套用建議順序</button>':'')+'</section>'+
     (merges?'<section><h3>合併生產<span>同原料一起做，少一次換線</span></h3><div class="ai-cards">'+merges+'</div></section>':'')+
     (routes||tips.length?'<section><h3>出貨建議<span>公司配送依地區排路線（三天內）</span></h3>'+routes+(tips.length?'<ul class="ai-tips">'+tips.map(x=>'<li>'+x+'</li>').join('')+'</ul>':'')+'</section>':'')+
-    (noAddr?'<section><h3>補上客戶地址<span>有地址才能自動排配送路線</span></h3>'+noAddr+'</section>':'')+
+    addrSuggestPanel(true)+(noAddr?'<section><h3>補上客戶地址<span>有地址才能自動排配送路線</span></h3>'+noAddr+'</section>':'')+
     '</div></div>';
   const sc=$('.ai-sheet')?$('.ai-sheet').scrollTop:0;$('#modal').innerHTML=h;$('.ai-sheet').scrollTop=sc;
 }
@@ -278,6 +279,22 @@ function apsT(id){return S.open.find(t=>t.id===id)}
 function segTime(p,d){if(!p||!p.start)return '—';if(p.startDay===d&&p.day===d)return p.start+'–'+p.end;if(p.startDay===d)return p.start+' 開始';if(p.day===d)return '續～'+p.end;return '續做'}
 function etaTag(t){const p=S.aps&&S.aps.tasks&&S.aps.tasks[t.id];if(!p||!p.day||!p.line)return '';return '<span class="eta'+(p.late?' late':'')+'">'+(p.late?'⚠ 可能延誤・':'預計 ')+(p.day===today()?'':md(p.day)+' ')+(p.end||'')+' 完成</span>'}
 /* ---------- operator-friendly explanations ---------- */
+/* ---------- address suggestions found online: a person confirms before they are used ---------- */
+function stopIdx(t,D){const r=((S.plan&&S.plan.routes)||[]).find(x=>x.date===D);if(!r)return 99;const i=r.stops.findIndex(s=>s.region!=='未填地址'&&s.customers.includes(t.customer));return i<0?99:i}
+function addrSuggestPanel(onlyOpen){
+  const openNames=new Set(S.open.map(t=>t.customer));
+  const list=S.customers.filter(c=>c.address_suggest&&(!onlyOpen||openNames.has(c.name)));
+  if(!list.length)return '';
+  return '<section class="aps-sec"><h2>客戶地址：系統在網路上找到了，請確認<span>確認後就會用來排配送路線；不對的話按「不對」自己輸入</span></h2><div class="sg-list">'+list.map(c=>
+    '<div class="sg"><div class="sg-m"><b>'+esc(c.name)+'</b><span class="sg-a">📍 '+esc(c.address_suggest)+'</span><small>'+esc(c.suggest_src||'')+'</small></div>'+
+    '<span class="sg-c c-'+(c.suggest_conf==='高'?'hi':c.suggest_conf==='中'?'mid':'lo')+'">吻合度 '+esc(c.suggest_conf||'?')+'</span>'+
+    '<div class="sg-a2"><button type="button" class="primary" data-sgok="'+esc(c.name)+'">對，採用</button><button type="button" data-sgno="'+esc(c.name)+'">不對</button></div></div>').join('')+'</div></section>';
+}
+document.addEventListener('click',async e=>{
+  const ok=e.target.closest('[data-sgok]'),no=e.target.closest('[data-sgno]');
+  if(ok){await act(()=>api('POST','/api/customers/accept',{name:ok.dataset.sgok}),'已採用地址，配送路線已更新');if(S.planOpen)renderPlan();return}
+  if(no){await act(()=>api('POST','/api/customers/reject',{name:no.dataset.sgno}),'已移除建議，請在訂單裡輸入正確地址');if(S.planOpen)renderPlan();return}
+});
 function whyOf(t){return (S.plan&&S.plan.why&&S.plan.why[t.id])||[]}
 function whyChips(t,max){const w=whyOf(t).slice(0,max||4);return w.length?'<div class="why">'+w.map(x=>'<span class="'+whyCls(x)+'">'+esc(x)+'</span>').join('')+'</div>':''}
 function whyCls(x){return /緊急|逾期/.test(x)?'w-red':/今天|物流/.test(x)?'w-amb':/同原料|併做/.test(x)?'w-pur':/鎖定|開工/.test(x)?'w-gold':/待料/.test(x)?'w-red':'w-dim'}
@@ -332,7 +349,7 @@ function renderAps(){
     '<div class="ak '+(A.overload.length?'warn':'ok')+'"><b>'+A.overload.length+'</b><span>天產線排滿</span></div>'+
     '<div class="ak"><b>'+locked+'</b><span>張人工鎖定</span></div>'+
     '<div class="ak"><b>'+held+'</b><span>張等原料</span></div>'+
-    '<div class="ak '+(S.plan&&S.plan.auto?'ok':'')+'"><b>'+(S.plan&&S.plan.auto?'開':'關')+'</b><span>自動排程</span></div></div>'+opsGuide();
+    '<div class="ak '+(S.plan&&S.plan.auto?'ok':'')+'"><b>'+(S.plan&&S.plan.auto?'開':'關')+'</b><span>自動排程</span></div></div>'+opsGuide()+addrSuggestPanel(true);
   // missing data — never guessed
   const miss=[];
   if(noLines)miss.push('<b>還沒有設定產線／設備</b>：系統無法計算產能與時間。到「排程參數」新增產線（例：蜂蜜充填線、糖漿線），設定每天可用工時與負責的類別。');
@@ -351,7 +368,7 @@ function renderAps(){
   const rows=A.lines.map((l,li)=>{const col=LINE_COLORS[li%LINE_COLORS.length];
     return '<div class="g-row"><div class="g-lane" style="--c:'+col+'"><b>'+esc(l.name)+'</b>'+(l.staff?'<small>'+l.staff+' 人</small>':'')+'</div>'+l.days.slice(0,7).map(d=>{
       const its=d.items.map(apsT).filter(Boolean);
-      return '<div class="g-cell'+(d.work?'':' off')+(d.pct>=98?' full':'')+'" data-gday="'+d.date+'"><div class="g-load"><i style="width:'+Math.min(100,d.pct)+'%"></i><span>'+(d.work?(d.cap?d.pct+'%':'停機'):'休')+'</span></div>'+(d.note?'<div class="g-note">'+esc(d.note)+'</div>':'')+
+      return '<div class="g-cell'+(d.work?'':' off')+(d.pct>=98?' full':'')+'" data-gday="'+d.date+'"><div class="g-load"><i style="width:'+Math.min(100,d.pct)+'%"></i><span>'+(d.work?(d.cap?d.pct+'%':d.date===today()&&d.full&&!d.note?'今日已收工':'停機'):'休')+'</span></div>'+(d.note?'<div class="g-note">'+esc(d.note)+'</div>':'')+
         its.slice(0,5).map(t=>{const p=T[t.id];return '<div class="g-blk'+(p.late?' late':'')+(t.locked?' lock':'')+(t.holdUntil?' hold':'')+'" style="--c:'+col+'" title="'+esc(t.customer+'｜'+t.productName)+'"><b>'+(t.locked?'🔒':'')+esc(t.customer)+'</b><span>'+num(t.qty)+esc(t.unit||'')+' · '+segTime(p,d.date)+'</span></div>'}).join('')+(its.length>5?'<div class="g-more">＋'+(its.length-5)+'</div>':'')+'</div>'}).join('')+'</div>'});
   const unl=S.open.filter(t=>T[t.id]&&!T[t.id].line);
   if(unl.length)rows.push('<div class="g-row"><div class="g-lane na"><b>未指定產線</b><small>無法算時間</small></div>'+days.map(d=>{const its=unl.filter(t=>T[t.id].day===d);return '<div class="g-cell na" data-gday="'+d+'">'+its.slice(0,4).map(t=>'<div class="g-blk na'+(T[t.id].late?' late':'')+'"><b>'+esc(t.customer)+'</b><span>'+num(t.qty)+esc(t.unit||'')+'</span></div>').join('')+(its.length>4?'<div class="g-more">＋'+(its.length-4)+'</div>':'')+'</div>'}).join('')+'</div>');
@@ -364,8 +381,8 @@ function renderAps(){
   h+='<section class="aps-sec"><h2>'+md(D)+' '+(D===td?'今天':wkName(D))+'　每日清單</h2><div class="aps-daily"><div class="ad-col"><h3>生產</h3>'+
     (prod.length?Object.keys(byLine).map(k=>{const L=A.lines.find(l=>l.id===k);return '<div class="ad-line"><div class="ad-ln">'+esc(L?L.name:'未指定產線')+'</div>'+byLine[k].map(t=>{const p=T[t.id];
       return '<div class="ad-row'+(p.late?' late':'')+'"><span class="ad-tm">'+segTime(p,D)+'</span><div class="ad-m"><b>'+(t.locked?'🔒 ':'')+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'</span>'+whyChips(t,3)+'<small>'+[p.minutes?'約 '+p.minutes+' 分鐘':'工時未知',p.changeover?'含換線 '+p.changeover+' 分':'',p.rateSrc||'',...(p.reasons||[]),...(p.flags||[]).filter(f=>f!=='工時未知')].filter(Boolean).map(esc).join('・')+'</small></div><span class="ad-q">'+qtyU(t)+'</span>'+apsActs(t)+'</div>'}).join('')+'</div>'}).join(''):'<p class="hint">這天沒有排生產。</p>')+
-    '</div><div class="ad-col"><h3>出貨／配送</h3>'+(ship.length?METHODS.concat(['']).map(m=>{const ts=ship.filter(t=>(t.shipMethod||'')===m);if(!ts.length)return '';
-      return '<div class="ad-line"><div class="ad-ln">'+(m?methodPill({shipMethod:m}):'<span class="pill p-tom">未選出貨方式</span>')+'</div>'+ts.map(t=>{const p=T[t.id];const ok=p&&p.day&&!p.late;return '<div class="ad-row"><div class="ad-m"><b>'+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'</span>'+(m==='公司配送'?'<small>'+esc(((S.customers.find(c=>c.name===t.customer)||{}).address)||'地址待確認')+'</small>':'')+'</div><span class="ad-q">'+qtyU(t)+'</span><span class="ad-st '+(ok?'ok':'bad')+'">'+(ok?'預計 '+md(p.day)+' 完成':'可能來不及')+'</span></div>'}).join('')+'</div>'}).join(''):'<p class="hint">這天沒有出貨。</p>')+
+    '</div><div class="ad-col"><h3>出貨／配送</h3>'+(ship.length?METHODS.concat(['']).map(m=>{const ts=ship.filter(t=>(t.shipMethod||'')===m).sort((a,b)=>stopIdx(a,D)-stopIdx(b,D));if(!ts.length)return '';
+      return '<div class="ad-line"><div class="ad-ln">'+(m?methodPill({shipMethod:m}):'<span class="pill p-tom">未選出貨方式</span>')+'</div>'+ts.map(t=>{const p=T[t.id];const ok=p&&p.day&&!p.late;return '<div class="ad-row"><div class="ad-m"><b>'+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'</span>'+(m==='公司配送'?'<small>'+(stopIdx(t,D)<99?'第 '+(stopIdx(t,D)+1)+' 站・':'')+esc(((S.customers.find(c=>c.name===t.customer)||{}).address)||'地址待確認')+'</small>':'')+'</div><span class="ad-q">'+qtyU(t)+'</span><span class="ad-st '+(ok?'ok':'bad')+'">'+(ok?'預計 '+md(p.day)+' 完成':'可能來不及')+'</span></div>'}).join('')+'</div>'}).join(''):'<p class="hint">這天沒有出貨。</p>')+
     '<p class="hint">車輛載重、收貨時段、行車時間尚未建立，配送順序僅依地區分組，未驗證行車時間。</p></div></div></section>';
   // run log
   h+='<section class="aps-sec"><h2>重排紀錄<span>每次訂單或參數變動，系統重算並記錄前後差異</span></h2><div class="aps-runs">'+(S.runs&&S.runs.length?S.runs.map(r=>{const d=r.diff||{};
