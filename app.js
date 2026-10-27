@@ -277,6 +277,47 @@ const LINE_COLORS=['#F2B33D','#86B6F2','#4FD08E','#C494FF','#FF8A7E','#7FDBFF'];
 function apsT(id){return S.open.find(t=>t.id===id)}
 function segTime(p,d){if(!p||!p.start)return '—';if(p.startDay===d&&p.day===d)return p.start+'–'+p.end;if(p.startDay===d)return p.start+' 開始';if(p.day===d)return '續～'+p.end;return '續做'}
 function etaTag(t){const p=S.aps&&S.aps.tasks&&S.aps.tasks[t.id];if(!p||!p.day||!p.line)return '';return '<span class="eta'+(p.late?' late':'')+'">'+(p.late?'⚠ 可能延誤・':'預計 ')+(p.day===today()?'':md(p.day)+' ')+(p.end||'')+' 完成</span>'}
+/* ---------- operator-friendly explanations ---------- */
+function whyOf(t){return (S.plan&&S.plan.why&&S.plan.why[t.id])||[]}
+function whyChips(t,max){const w=whyOf(t).slice(0,max||4);return w.length?'<div class="why">'+w.map(x=>'<span class="'+whyCls(x)+'">'+esc(x)+'</span>').join('')+'</div>':''}
+function whyCls(x){return /緊急|逾期/.test(x)?'w-red':/今天|物流/.test(x)?'w-amb':/同原料|併做/.test(x)?'w-pur':/鎖定|開工/.test(x)?'w-gold':/待料/.test(x)?'w-red':'w-dim'}
+const RULES=[
+  ['🚨','緊急單','有緊急單一定排第一個，生產端會響警報。'],
+  ['📅','出貨日早的先做','逾期 → 今天 → 明天 → 之後。公司配送若設定要提前一天，就再往前推。'],
+  ['🍯','同原料接著做','同一種蜜或同一批原料的訂單排在一起，不用換線清洗；兩天內出貨的會提前併在同一鍋。'],
+  ['🚚','同一天：物流 → 配送 → 自取','物流要趕收件時間先做，門市自取最後。'],
+  ['🔒','人工決定優先','鎖定、已開工的單不會被系統移動；待料的單排到到料日之後。'],
+];
+function opsGuide(){
+  const A=S.aps,T=(A&&A.tasks)||{},td=today(),now=new Date(),nowS=pad(now.getHours())+':'+pad(now.getMinutes());
+  const hasLines=A&&A.lines&&A.lines.length;
+  const doing=t=>!!t.startedAt;
+  let h='<section class="aps-sec ops"><h2>今天的作業順序<span>照編號由上往下做就對了；每張都寫了「為什麼排在這裡」</span><em class="ops-now">現在 '+nowS+'</em></h2>';
+  const step=(t,i,first,p)=>{const st=doing(t)?'進行中':first===0?'現在做':first===1?'下一個':'';
+    return '<div class="op-step'+(st==='進行中'?' run':st==='現在做'?' cur':st==='下一個'?' nxt':'')+(p&&p.late?' late':'')+'"><div class="op-n">'+(i+1)+'</div><div class="op-b">'+
+      (st?'<span class="op-st">'+st+'</span>':'')+'<div class="op-c"><b>'+(t.urgent?'<span class="urg-tag">緊急</span> ':'')+(t.locked?'🔒 ':'')+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'</span></div>'+
+      whyChips(t,4)+(p&&p.late?'<div class="op-late">⚠ 照目前產能可能來不及：'+esc(p.why||'')+'</div>':'')+'</div>'+
+      '<div class="op-r">'+(p&&p.start?'<span class="op-t">'+segTime(p,td)+'</span>':'')+'<b>'+num(t.qty)+'</b><small>'+esc(t.unit||'')+'</small></div></div>'};
+  if(hasLines){
+    const cols=A.lines.map((l,li)=>{const col=LINE_COLORS[li%LINE_COLORS.length];const d=l.days.find(x=>x.date===td)||{items:[]};
+      const its=d.items.map(apsT).filter(Boolean);let k=0,out='',prevKey=null;
+      its.forEach((t,i)=>{const p=T[t.id];if(p&&p.changeover&&p.startDay===td)out+='<div class="op-co">🧽 換線清洗約 '+p.changeover+' 分鐘（換成 '+esc(catName(t.cat))+'）</div>';out+=step(t,i,doing(t)?-1:k++,p)});
+      return '<div class="op-col" style="--c:'+col+'"><div class="op-lh"><b>'+esc(l.name)+'</b><span>'+(d.work?'今天用了 '+(d.pct||0)+'% 產能':'今天休息')+'</span></div>'+(out||'<p class="hint">今天這條線沒有排工作。</p>')+'</div>'}).join('');
+    const un=S.open.filter(t=>T[t.id]&&!T[t.id].line&&(T[t.id].day===td));
+    h+='<div class="op-cols">'+cols+(un.length?'<div class="op-col" style="--c:#FF5A4E"><div class="op-lh"><b>未指定產線</b><span>到排程參數指定後才算得出時間</span></div>'+un.map((t,i)=>step(t,i,i,T[t.id])).join('')+'</div>':'')+'</div>';
+  }else{
+    const lim=addDays(td,2),ord=(S.plan&&S.plan.order)||[];
+    const list=ord.map(apsT).filter(t=>t&&(t.urgent||t.shipDate<=lim)).slice(0,20);
+    h+='<div class="op-note">還沒有設定產線與產能，所以先只排「做的順序」、不算幾點做。到右上「⚙ 排程參數」填好後，這裡就會出現每條線的時間表。</div>'+
+      (list.length?'<div class="op-col solo">'+list.map((t,i)=>step(t,i,doing(t)?-1:i,null)).join('')+'</div>':'<p class="hint">三天內沒有要做的訂單。</p>')+
+      (S.plan&&S.plan.moved?'<div class="op-note warn">看板目前的順序跟上面的建議不一樣（'+S.plan.moved+' 筆）。到看板的「智慧排程」按「套用建議順序」，或打開自動排程。</div>':'');
+  }
+  h+='</section>';
+  h+='<details class="aps-sec rules"'+(store.get('tsb_rules')==='1'?'':' open')+'><summary>系統是怎麼排的？（5 條規則）</summary><div class="rule-row">'+RULES.map((r,i)=>'<div class="rule"><span class="rule-i">'+r[0]+'</span><b>'+(i+1)+'. '+esc(r[1])+'</b><small>'+esc(r[2])+'</small></div>').join('<i class="rule-arr" aria-hidden="true">›</i>')+'</div>'+
+    '<p class="hint">排完之後，系統再用每條產線每天的工時、換線時間、每小時產量，算出每張單幾點開始、幾點完成。算出來會超過出貨日的，會標「可能來不及」並告訴你原因和解法。</p></details>';
+  return h;
+}
+document.addEventListener('toggle',e=>{if(e.target.matches&&e.target.matches('details.rules'))store.set('tsb_rules',e.target.open?'0':'1')},true);
 function wkName(d){return '週'+WD[new Date(d+'T00:00:00').getDay()]}
 function renderAps(){
   const v=$('#v-aps');const A=S.aps;if(!v)return;
@@ -285,13 +326,13 @@ function renderAps(){
   const td=today();if(!S.apsDay||!A.days.includes(S.apsDay))S.apsDay=td;
   const T=A.tasks,late=A.late.map(apsT).filter(Boolean),locked=S.open.filter(t=>t.locked).length,held=S.open.filter(t=>t.holdUntil).length;
   const mis=A.missing,noLines=!A.lines.length;
-  let h='<header class="pg-head aps-head"><div><h1>智慧排程</h1><p>依產線產能、出貨日倒推、待料與人工鎖定，自動算出每天每條線做什麼。訂單一變動就重算。</p></div><button type="button" class="ghost-btn" id="apsedit">⚙ 排程參數</button></header>';
+  let h='<header class="pg-head aps-head"><div><h1>智慧排程</h1><p>系統依出貨日、原料、產能自動排好每天做什麼、誰先誰後。訂單一有變動就會重新排。</p></div><button type="button" class="ghost-btn" id="apsedit">⚙ 排程參數</button></header>';
   h+='<div class="aps-kpi">'+
-    '<div class="ak '+(late.length?'bad':'ok')+'"><b>'+late.length+'</b><span>可能延誤</span></div>'+
-    '<div class="ak '+(A.overload.length?'warn':'ok')+'"><b>'+A.overload.length+'</b><span>滿載天次</span></div>'+
-    '<div class="ak"><b>'+locked+'</b><span>人工鎖定</span></div>'+
-    '<div class="ak"><b>'+held+'</b><span>待料</span></div>'+
-    '<div class="ak '+(S.plan&&S.plan.auto?'ok':'')+'"><b>'+(S.plan&&S.plan.auto?'開':'關')+'</b><span>自動排程</span></div></div>';
+    '<div class="ak '+(late.length?'bad':'ok')+'"><b>'+late.length+'</b><span>張可能來不及</span></div>'+
+    '<div class="ak '+(A.overload.length?'warn':'ok')+'"><b>'+A.overload.length+'</b><span>天產線排滿</span></div>'+
+    '<div class="ak"><b>'+locked+'</b><span>張人工鎖定</span></div>'+
+    '<div class="ak"><b>'+held+'</b><span>張等原料</span></div>'+
+    '<div class="ak '+(S.plan&&S.plan.auto?'ok':'')+'"><b>'+(S.plan&&S.plan.auto?'開':'關')+'</b><span>自動排程</span></div></div>'+opsGuide();
   // missing data — never guessed
   const miss=[];
   if(noLines)miss.push('<b>還沒有設定產線／設備</b>：系統無法計算產能與時間。到「排程參數」新增產線（例：蜂蜜充填線、糖漿線），設定每天可用工時與負責的類別。');
@@ -302,7 +343,7 @@ function renderAps(){
   miss.push('<b>系統目前沒有的資料</b>（排程不會自己編）：原物料庫存與到貨、成品庫存、人力班別、車輛載重／容積、客戶收貨時段、行車時間。缺料請用「待料」手動標示到料日。');
   h+='<details class="aps-miss"'+(noLines||mis.noRate.length?' open':'')+'><summary>待補資料（'+miss.length+'）</summary><ul>'+miss.map(x=>'<li>'+x+'</li>').join('')+'</ul></details>';
   // late orders with reasons and options
-  if(late.length)h+='<section class="aps-sec"><h2>可能延誤</h2><div class="aps-late">'+late.map(t=>{const p=T[t.id];return '<div class="al-card"><div class="alc-h"><b>'+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'　'+qtyU(t)+'</span></div>'+
+  if(late.length)h+='<section class="aps-sec"><h2>可能來不及<span>照目前產能算，這些單會晚於最晚完成日</span></h2><div class="aps-late">'+late.map(t=>{const p=T[t.id];return '<div class="al-card"><div class="alc-h"><b>'+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'　'+qtyU(t)+'</span></div>'+
       '<div class="alc-d">最晚完成 <b>'+md(p.deadline)+'</b>　預計完成 <b class="bad">'+(p.day?md(p.day)+' '+(p.end||''):'排不進')+'</b></div>'+
       '<div class="alc-why">原因：'+esc(p.why||'')+'</div>'+(p.options&&p.options.length?'<ul class="alc-opt">'+p.options.map(o=>'<li>'+esc(o)+'</li>').join('')+'</ul>':'')+apsActs(t)+'</div>'}).join('')+'</div></section>';
   // gantt
@@ -314,7 +355,7 @@ function renderAps(){
         its.slice(0,5).map(t=>{const p=T[t.id];return '<div class="g-blk'+(p.late?' late':'')+(t.locked?' lock':'')+(t.holdUntil?' hold':'')+'" style="--c:'+col+'" title="'+esc(t.customer+'｜'+t.productName)+'"><b>'+(t.locked?'🔒':'')+esc(t.customer)+'</b><span>'+num(t.qty)+esc(t.unit||'')+' · '+segTime(p,d.date)+'</span></div>'}).join('')+(its.length>5?'<div class="g-more">＋'+(its.length-5)+'</div>':'')+'</div>'}).join('')+'</div>'});
   const unl=S.open.filter(t=>T[t.id]&&!T[t.id].line);
   if(unl.length)rows.push('<div class="g-row"><div class="g-lane na"><b>未指定產線</b><small>無法算時間</small></div>'+days.map(d=>{const its=unl.filter(t=>T[t.id].day===d);return '<div class="g-cell na" data-gday="'+d+'">'+its.slice(0,4).map(t=>'<div class="g-blk na'+(T[t.id].late?' late':'')+'"><b>'+esc(t.customer)+'</b><span>'+num(t.qty)+esc(t.unit||'')+'</span></div>').join('')+(its.length>4?'<div class="g-more">＋'+(its.length-4)+'</div>':'')+'</div>'}).join('')+'</div>');
-  h+='<section class="aps-sec"><h2>生產日曆<span>點日期看當天清單；紅色＝可能延誤、🔒＝鎖定、斜線＝待料</span></h2><div class="gantt" style="--n:'+days.length+'"><div class="g-row g-hd"><div class="g-lane"></div>'+days.map(d=>'<button type="button" class="g-day'+(d===S.apsDay?' on':'')+(d===td?' td':'')+'" data-gday="'+d+'"><b>'+md(d)+'</b><small>'+(d===td?'今天':wkName(d))+'</small></button>').join('')+'</div>'+rows.join('')+'</div></section>';
+  h+='<section class="aps-sec"><h2>未來 7 天生產日曆<span>每格上方是當天產能用了多少；點日期看那天的清單</span></h2><div class="g-legend"><span><i class="lg ok"></i>準時</span><span><i class="lg late"></i>可能來不及</span><span><i class="lg hold"></i>等原料</span><span>🔒 人工鎖定</span><span><i class="lg full"></i>產線排滿</span></div><div class="gantt" style="--n:'+days.length+'"><div class="g-row g-hd"><div class="g-lane"></div>'+days.map(d=>'<button type="button" class="g-day'+(d===S.apsDay?' on':'')+(d===td?' td':'')+'" data-gday="'+d+'"><b>'+md(d)+'</b><small>'+(d===td?'今天':wkName(d))+'</small></button>').join('')+'</div>'+rows.join('')+'</div></section>';
   // daily lists
   const D=S.apsDay;
   const prod=S.open.filter(t=>T[t.id]&&(T[t.id].day===D||T[t.id].startDay===D)).sort((a,b)=>String(T[a.id].line).localeCompare(String(T[b.id].line))||String(T[a.id].start||'').localeCompare(String(T[b.id].start||'')));
@@ -322,7 +363,7 @@ function renderAps(){
   const byLine={};prod.forEach(t=>{const k=T[t.id].line||'_';(byLine[k]=byLine[k]||[]).push(t)});
   h+='<section class="aps-sec"><h2>'+md(D)+' '+(D===td?'今天':wkName(D))+'　每日清單</h2><div class="aps-daily"><div class="ad-col"><h3>生產</h3>'+
     (prod.length?Object.keys(byLine).map(k=>{const L=A.lines.find(l=>l.id===k);return '<div class="ad-line"><div class="ad-ln">'+esc(L?L.name:'未指定產線')+'</div>'+byLine[k].map(t=>{const p=T[t.id];
-      return '<div class="ad-row'+(p.late?' late':'')+'"><span class="ad-tm">'+segTime(p,D)+'</span><div class="ad-m"><b>'+(t.locked?'🔒 ':'')+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'</span><small>'+[p.minutes?'約 '+p.minutes+' 分鐘':'工時未知',p.changeover?'含換線 '+p.changeover+' 分':'',p.rateSrc||'',...(p.reasons||[]),...(p.flags||[]).filter(f=>f!=='工時未知')].filter(Boolean).map(esc).join('・')+'</small></div><span class="ad-q">'+qtyU(t)+'</span>'+apsActs(t)+'</div>'}).join('')+'</div>'}).join(''):'<p class="hint">這天沒有排生產。</p>')+
+      return '<div class="ad-row'+(p.late?' late':'')+'"><span class="ad-tm">'+segTime(p,D)+'</span><div class="ad-m"><b>'+(t.locked?'🔒 ':'')+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'</span>'+whyChips(t,3)+'<small>'+[p.minutes?'約 '+p.minutes+' 分鐘':'工時未知',p.changeover?'含換線 '+p.changeover+' 分':'',p.rateSrc||'',...(p.reasons||[]),...(p.flags||[]).filter(f=>f!=='工時未知')].filter(Boolean).map(esc).join('・')+'</small></div><span class="ad-q">'+qtyU(t)+'</span>'+apsActs(t)+'</div>'}).join('')+'</div>'}).join(''):'<p class="hint">這天沒有排生產。</p>')+
     '</div><div class="ad-col"><h3>出貨／配送</h3>'+(ship.length?METHODS.concat(['']).map(m=>{const ts=ship.filter(t=>(t.shipMethod||'')===m);if(!ts.length)return '';
       return '<div class="ad-line"><div class="ad-ln">'+(m?methodPill({shipMethod:m}):'<span class="pill p-tom">未選出貨方式</span>')+'</div>'+ts.map(t=>{const p=T[t.id];const ok=p&&p.day&&!p.late;return '<div class="ad-row"><div class="ad-m"><b>'+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'</span>'+(m==='公司配送'?'<small>'+esc(((S.customers.find(c=>c.name===t.customer)||{}).address)||'地址待確認')+'</small>':'')+'</div><span class="ad-q">'+qtyU(t)+'</span><span class="ad-st '+(ok?'ok':'bad')+'">'+(ok?'預計 '+md(p.day)+' 完成':'可能來不及')+'</span></div>'}).join('')+'</div>'}).join(''):'<p class="hint">這天沒有出貨。</p>')+
     '<p class="hint">車輛載重、收貨時段、行車時間尚未建立，配送順序僅依地區分組，未驗證行車時間。</p></div></div></section>';
@@ -595,7 +636,7 @@ function renderBoard(){
     return '<div class="card'+(t.shipDate<td?' over':t.shipDate===td?' u-today':t.shipDate===addDays(td,1)?' u-tom':'')+(on?' picked':'')+(next?' next':'')+(t.urgent?' urgent':'')+(S.flag[t.id]||S.inbox.some(x=>x.id===t.id)?' fresh':'')+'" data-id="'+t.id+'"'+(S.pick?' role="checkbox" aria-checked="'+on+'" tabindex="0"':'')+'>'+
       '<div class="c-top">'+(S.pick?'<span class="pickbox'+(on?' on':'')+'" aria-hidden="true">'+(on?'✓':'')+'</span>':'<span class="grip" aria-label="拖曳排序" title="拖曳排序">⠿</span><span class="seq">'+pad(i+1)+'</span>')+
         (t.urgent?'<span class="urg-tag">緊急單</span>':'')+(next&&!t.urgent?'<span class="next-tag">現在生產</span>':'')+flagTag(t)+shipCell(t,td)+'</div>'+
-      '<div class="cust">'+esc(t.customer)+'</div><div class="pname">'+esc(t.productName)+'</div>'+
+      '<div class="cust">'+esc(t.customer)+'</div><div class="pname">'+esc(t.productName)+'</div>'+whyChips(t,3)+
       '<div class="meta">'+methodPill(t)+code+(t.parentId?'<span class="pill p-later">續做</span>':'')+(t.locked?'<span class="lock-tag">🔒 鎖定</span>':'')+(t.holdUntil?'<span class="hold-tag">待料 '+md(t.holdUntil)+'</span>':'')+etaTag(t)+'</div>'+
       (t.note?'<div class="note-box">備註：'+esc(t.note)+'</div>':'')+
       '<div class="c-bot"><div class="c-qty"><b>'+num(t.qty)+'</b><span>'+esc(t.unit||'')+'</span></div>'+

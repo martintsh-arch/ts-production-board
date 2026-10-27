@@ -300,6 +300,22 @@ function smartPlan(open, customers, cfg) {
   const planRest = APS.mergeLocked(current, [].concat(...clusters.map((c) => c.tasks.map((t) => t.id))), fixed);
   const order = urgent.map((t) => t.id).concat(planRest);
   const moved = planRest.filter((id, i) => current[i] !== id).length;
+  // plain-language reasons for where each order sits, shown to operators
+  const md2 = (d) => String(d).slice(5).replace('-', '/');
+  const why = {};
+  urgent.forEach((t) => { why[t.id] = ['緊急單，最優先']; });
+  clusters.forEach((c) => c.tasks.forEach((t, i) => {
+    const w = [];
+    if (t.started_at) w.push('已開工');
+    if (t.locked) w.push('人工鎖定，不自動移動');
+    if (t.ship_date < td) w.push('已逾期（' + md2(t.ship_date) + '），要先補');
+    else w.push(eff(t) === td ? '今天出貨' : eff(t) === addDaysStr(td, 1) ? '明天出貨' : md2(t.ship_date) + ' 出貨');
+    if (eff(t) > c.anchor) w.push('提前併做：和 ' + md2(c.anchor) + ' 同原料一起做');
+    else if (c.tasks.length > 1) w.push(i === 0 ? '同原料 ' + c.tasks.length + ' 張一起做' : '同原料接著做，免換線');
+    if (t.ship_method === '物流配送') w.push('物流收件前完成');
+    if (t.hold_until && t.hold_until > td) w.push('待料至 ' + md2(t.hold_until));
+    why[t.id] = w;
+  }));
 
   const sumUnits = (ts) => { const u = {}; ts.forEach((t) => { u[t.unit || ''] = (u[t.unit || ''] || 0) + t.qty; }); return Object.entries(u).map(([k, v]) => v + (k ? ' ' + k : '')).join('＋'); };
   const merges = clusters.filter((c) => c.tasks.length > 1).map((c) => {
@@ -342,7 +358,7 @@ function smartPlan(open, customers, cfg) {
   const logistics = {};
   open.filter((t) => t.ship_method === '物流配送' && eff(t) <= horizon).forEach((t) => { logistics[eff(t)] = (logistics[eff(t)] || 0) + 1; });
   const noMethod = open.filter((t) => !t.ship_method && eff(t) <= horizon).length;
-  return { order, moved, merges, routes, combine, sameArea, noAddr, logistics, noMethod, auto: !!(cfg && cfg.autoPlan), today: td };
+  return { order, moved, why, merges, routes, combine, sameArea, noAddr, logistics, noMethod, auto: !!(cfg && cfg.autoPlan), today: td };
 }
 async function applyPlan(client) {
   const db = client || pool;
