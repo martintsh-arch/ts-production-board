@@ -102,6 +102,7 @@ async function migrate() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     ALTER TABLE customers ADD COLUMN IF NOT EXISTS address TEXT NOT NULL DEFAULT '';
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS no_lot BOOLEAN NOT NULL DEFAULT FALSE;
     CREATE TABLE IF NOT EXISTS customer_products (
       customer TEXT NOT NULL,
       product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -487,6 +488,7 @@ function lotPrefix(cfg, { cat, variety, matDate, matArr }) {
   return y + (c.code || cat) + t.m + variety;
 }
 const LOT_RE = /^[A-Z0-9]{2,20}(-[A-Z0-9]{1,4})?$/;
+const NO_LOT = '無批號';
 const LOT_FMT = '批號格式不對（英文與數字，例如 HP101-A 或 HS0913B-F）';
 function isAuto(cfg, cat) { return !!(cfg.cats[cat] && cfg.cats[cat].auto); }
 // manual lot: pull material date / arrival letter out of it when it follows the syrup pattern
@@ -600,6 +602,25 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
       await client.query('COMMIT');
       return res.json({ lot: lotText, lots: contents.map((c) => c.name + ' ' + c.lot), rest, box: true });
     }
+    if (b.noLot === true) {
+      // packaging and other items that carry no lot number: finish without one
+      const qty = parseInt(b.qty, 10);
+      if (!qty || qty < 1 || qty > t.qty) throw new UserError('數量需介於 1 到 ' + t.qty);
+      await client.query(
+        `UPDATE tasks SET status='done', lot=$1, completed_at=now(), operator=$2,
+           qty=$3, ordered_qty=COALESCE(ordered_qty, qty) WHERE id=$4`, [NO_LOT, operator, qty, t.id]);
+      const rest = t.qty - qty;
+      if (rest > 0) {
+        await client.query(
+          `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, sort_order, parent_id, unit)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']);
+      }
+      await client.query('UPDATE products SET no_lot=TRUE WHERE id=$1', [t.product_id]);
+      await bump(client);
+      await client.query('COMMIT');
+      return res.json({ lot: NO_LOT, lots: [NO_LOT + ' ×' + qty], rest, noLot: true });
+    }
     const total = parts.reduce((a, p) => a + (p.qty || 0), 0);
     if (parts.some((p) => !p.qty || p.qty < 1)) throw new UserError('每個批號的數量都要大於 0');
     if (total > t.qty) throw new UserError('各批號數量合計 ' + total + '，超過訂單的 ' + t.qty);
@@ -682,9 +703,11 @@ app.post('/api/tasks/finish-batch', wrap(async (req, res) => {
   try {
     await client.query('BEGIN');
     const cfg = await getConfig(client);
-    if (!cfg.cats[p.cat]) throw new UserError(p.cat ? '沒有這個類別代碼：' + p.cat : '請先選擇產品類別');
+    const noLot = b.noLot === true;
+    if (!noLot && !cfg.cats[p.cat]) throw new UserError(p.cat ? '沒有這個類別代碼：' + p.cat : '請先選擇產品類別');
     let lot;
-    if (isAuto(cfg, p.cat)) {
+    if (noLot) lot = NO_LOT;
+    else if (isAuto(cfg, p.cat)) {
       const prefix = lotPrefix(cfg, p);
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [prefix]);
       const n = await nextSeq(client, prefix);
@@ -695,7 +718,7 @@ app.post('/api/tasks/finish-batch', wrap(async (req, res) => {
       if (!LOT_RE.test(lot)) throw new UserError(LOT_FMT);
       const mm = parseMat(lot); p.matDate = mm.matDate; p.matArr = mm.matArr;
     }
-    const isMat = cfg.cats[p.cat].rule === 'material';
+    const isMat = !noLot && cfg.cats[p.cat].rule === 'material';
     const { rows } = await client.query(`SELECT * FROM tasks WHERE id = ANY($1::int[]) FOR UPDATE`, [items.map((x) => x.id)]);
     let rest = 0;
     for (const it of items) {
@@ -707,7 +730,7 @@ app.post('/api/tasks/finish-batch', wrap(async (req, res) => {
       await client.query(
         `UPDATE tasks SET status='done', lot=$1, completed_at=now(), operator=$2, cat=$3, variety=$4,
            qty=$5, ordered_qty=COALESCE(ordered_qty, qty), mat_date=$6, mat_arr=$7 WHERE id=$8`,
-        [lot, operator, p.cat, isMat ? t.variety : (p.variety || t.variety), it.qty, isMat ? p.matDate : null, isMat ? (p.matArr == null ? null : p.matArr) : null, t.id]);
+        [lot, operator, noLot ? t.cat : p.cat, noLot || isMat ? t.variety : (p.variety || t.variety), it.qty, isMat ? p.matDate : null, isMat ? (p.matArr == null ? null : p.matArr) : null, t.id]);
       if (t.qty - it.qty > 0) {
         rest++;
         await client.query(
@@ -716,6 +739,7 @@ app.post('/api/tasks/finish-batch', wrap(async (req, res) => {
           [t.customer, t.product_id, t.product_name, t.cat, t.variety, t.qty - it.qty, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']);
       }
     }
+    if (noLot) await client.query('UPDATE products SET no_lot=TRUE WHERE id IN (SELECT product_id FROM tasks WHERE id = ANY($1::int[]))', [items.map((x) => x.id)]);
     await bump(client);
     await client.query('COMMIT');
     res.json({ lot, count: items.length, rest });

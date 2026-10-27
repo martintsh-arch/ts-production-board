@@ -271,15 +271,42 @@ document.addEventListener('click',async e=>{
 });
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&S.planOpen)closePlan()});
 
-/* ---------- completion feedback ---------- */
+/* ---------- completion feedback: Japanese variety-show style (集中線 + 大字砸下 + 字幕條 + 太鼓) ---------- */
+function varietySfx(){if(!Snd.on)return;Snd.unlock();const c=Snd.ctx;if(!c)return;try{
+  const t0=c.currentTime+.02,out=c.createGain();out.gain.value=.9;out.connect(c.destination);
+  const noise=(dur)=>{const b=c.createBuffer(1,c.sampleRate*dur,c.sampleRate),d=b.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;const s=c.createBufferSource();s.buffer=b;return s};
+  // "ピューッ" slide whistle up
+  {const o=c.createOscillator(),g=c.createGain();o.type='sine';o.frequency.setValueAtTime(500,t0);o.frequency.exponentialRampToValueAtTime(2200,t0+.32);
+   g.gain.setValueAtTime(.0001,t0);g.gain.exponentialRampToValueAtTime(.22,t0+.04);g.gain.exponentialRampToValueAtTime(.0001,t0+.36);o.connect(g);g.connect(out);o.start(t0);o.stop(t0+.4)}
+  // "ドーン" taiko hit ×2
+  [[.36,1],[.62,.75]].forEach(([dt,a])=>{const t=t0+dt,o=c.createOscillator(),g=c.createGain();o.type='sine';o.frequency.setValueAtTime(140,t);o.frequency.exponentialRampToValueAtTime(48,t+.45);
+    g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(a,t+.008);g.gain.exponentialRampToValueAtTime(.0001,t+.6);o.connect(g);g.connect(out);o.start(t);o.stop(t+.65);
+    const n=noise(.12),f=c.createBiquadFilter(),ng=c.createGain();f.type='lowpass';f.frequency.value=900;ng.gain.setValueAtTime(.5*a,t);ng.gain.exponentialRampToValueAtTime(.0001,t+.12);n.connect(f);f.connect(ng);ng.connect(out);n.start(t)});
+  // "ジャーン" crash cymbal
+  {const t=t0+.36,n=noise(1.6),f=c.createBiquadFilter(),g=c.createGain();f.type='highpass';f.frequency.value=4200;g.gain.setValueAtTime(.32,t);g.gain.exponentialRampToValueAtTime(.0001,t+1.5);n.connect(f);f.connect(g);g.connect(out);n.start(t)}
+  // "パパパパーン" fanfare
+  [[784,.0],[988,.09],[1175,.18],[1568,.27]].forEach(([fq,dt],i)=>{const t=t0+.7+dt,d=i===3?.9:.12;['square','sawtooth'].forEach(type=>{const o=c.createOscillator(),g=c.createGain(),lp=c.createBiquadFilter();lp.type='lowpass';lp.frequency.value=3200;o.type=type;o.frequency.value=fq;o.detune.value=type==='square'?-6:6;
+    g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.07,t+.012);g.gain.setValueAtTime(.07,t+d*.7);g.gain.exponentialRampToValueAtTime(.0001,t+d);o.connect(lp);lp.connect(g);g.connect(out);o.start(t);o.stop(t+d+.05)})});
+  // sparkle on top
+  [2637,3136,3520,4186].forEach((fq,i)=>Snd.tone(fq,.95+i*.07,.35,'sine',.05));
+}catch(e){}}
 function celebrate(title,sub,lots){
-  const box=document.createElement('div');box.className='celebrate';box.setAttribute('role','status');
-  let hex='';for(let i=0;i<16;i++){const ang=(i/16)*Math.PI*2+Math.random()*.3,dist=130+Math.random()*90;hex+='<i style="--x:'+Math.round(Math.cos(ang)*dist)+'px;--y:'+Math.round(Math.sin(ang)*dist)+'px;--d:'+(Math.random()*.15).toFixed(2)+'s;--s:'+(0.6+Math.random()*0.8).toFixed(2)+'"></i>'}
-  box.innerHTML='<div class="cel-fx" aria-hidden="true"><i class="cel-ring"></i><i class="cel-ring r2"></i><i class="cel-ring r3"></i><i class="cel-rays"></i></div><div class="cel-card"><div class="cel-burst" aria-hidden="true">'+hex+'</div><svg class="cel-check" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="29"/><path d="M19 33l9 9 18-19"/></svg>'+
-    '<div class="cel-kicker">完成生產</div><div class="cel-title">'+esc(title)+'</div><div class="cel-sub">'+esc(sub)+'</div>'+(lots&&lots.length?'<div class="cel-lots">'+lots.map(l=>'<span>'+esc(l)+'</span>').join('')+'</div>':'')+'</div>';
-  document.body.appendChild(box);Snd.play('done');
-  const close=()=>{if(box.classList.contains('out'))return;box.classList.add('out');setTimeout(()=>box.remove(),320)};
-  box.addEventListener('click',close);setTimeout(close,2600);
+  const box=document.createElement('div');box.className='vx';box.setAttribute('role','status');
+  const BIG=['大成功！','完成啦！'];const big=lots&&lots.length&&/同一批/.test(title)?'一鍋搞定！':BIG[Math.floor(Math.random()*2)];
+  let conf='';const cols=['#FFE14D','#FF3B6B','#3BC8FF','#5CFF8A','#FF9A1F','#FFFFFF','#B07CFF'];
+  for(let i=0;i<70;i++)conf+='<i style="--x:'+(Math.random()*100).toFixed(1)+'vw;--d:'+(Math.random()*.7).toFixed(2)+'s;--t:'+(1.8+Math.random()*1.6).toFixed(2)+'s;--r:'+Math.round(Math.random()*720-360)+'deg;--dx:'+Math.round(Math.random()*160-80)+'px;background:'+cols[i%cols.length]+';width:'+(6+Math.random()*10).toFixed(0)+'px;height:'+(10+Math.random()*14).toFixed(0)+'px"></i>';
+  box.innerHTML='<div class="vx-lines" aria-hidden="true"></div><div class="vx-flash" aria-hidden="true"></div><div class="vx-conf" aria-hidden="true">'+conf+'</div>'+
+    '<div class="vx-stage"><div class="vx-star" aria-hidden="true"></div>'+
+    '<div class="vx-head"><div class="vx-big" data-t="'+esc(big)+'">'+esc(big)+'</div>'+
+    '<div class="vx-stamp" aria-hidden="true"><span>生產</span><b>完了</b></div></div>'+
+    '<div class="vx-tel"><span class="vx-tel-k">完成</span><span class="vx-tel-t">'+esc(title)+'</span></div>'+
+    '<div class="vx-sub">'+esc(sub)+'</div>'+
+    (lots&&lots.length?'<div class="vx-lots">'+lots.map(l=>'<span>'+esc(l)+'</span>').join('')+'</div>':'')+'</div>';
+  document.body.appendChild(box);varietySfx();
+  const m=document.querySelector('main');if(m){m.classList.remove('vx-shake');void m.offsetWidth;setTimeout(()=>m.classList.add('vx-shake'),380);setTimeout(()=>m.classList.remove('vx-shake'),1000)}
+  if(navigator.vibrate)try{navigator.vibrate([30,340,120])}catch(e){}
+  const close=()=>{if(box.classList.contains('out'))return;box.classList.add('out');setTimeout(()=>box.remove(),350)};
+  box.addEventListener('click',close);setTimeout(close,3400);
 }
 function notifyBanner(lines,speech){
   let wrap=$('#notes');if(!wrap){wrap=document.createElement('div');wrap.id='notes';document.body.appendChild(wrap)}
@@ -484,6 +511,7 @@ function openFinish(id){
   const pr=S.products.find(p=>p.id===t.productId)||{};const dc=t.cat||pr.cat||'',dv=t.variety||pr.variety||'';
   F={t,defCat:dc,cat:dc,variety:dv,matDate:'',matArr:'',arrSet:false,qty:String(t.qty),operator:store.get('tsb_op'),step:'date',err:'',pv:null,seq:'',seqTouched:false,showAll:false,busy:false,lots:[],mlot:''};
   if(!(cfg().people||[]).includes(F.operator))F.operator='';
+  F.noLot=!!pr.no_lot;
   const bx=boxComps(t.productId);
   if(bx.length){F.box=bx;F.cont={};bx.forEach(p=>{const r=(S.recentLots[p.id]||[])[0];F.cont[p.id]=r?{lot:r[0],date:r[1],manual:false}:{lot:'',date:today(),manual:true}});drawFinish();return}
   drawFinish();updatePreview();
@@ -498,7 +526,7 @@ function openBatch(ids){
   const vars=[...new Set(cv.map(x=>x.variety))];
   if(rule0!=='material'&&vars.length>1)return toast('勾選的品項品種不同（'+vars.map(v=>cats[0]+v).join('、')+'），不能共用同一個批號');
   const bq={};ts.forEach(t=>bq[t.id]=String(t.qty));
-  F={t:ts[0],batch:ts,bq,defCat:cats[0],cat:cats[0],variety:rule0==='material'?'':vars[0],matDate:'',matArr:'',arrSet:false,qty:String(ts[0].qty),operator:store.get('tsb_op'),step:'date',err:'',pv:null,seq:'',seqTouched:false,showAll:false,busy:false,lots:[],mlot:''};
+  F={noLot:ts.every(t=>(S.products.find(p=>p.id===t.productId)||{}).no_lot),t:ts[0],batch:ts,bq,defCat:cats[0],cat:cats[0],variety:rule0==='material'?'':vars[0],matDate:'',matArr:'',arrSet:false,qty:String(ts[0].qty),operator:store.get('tsb_op'),step:'date',err:'',pv:null,seq:'',seqTouched:false,showAll:false,busy:false,lots:[],mlot:''};
   if(!(cfg().people||[]).includes(F.operator))F.operator='';
   drawFinish();updatePreview();
 }
@@ -527,6 +555,9 @@ function drawFinish(){
    (F.batch?'<div class="sheet-h"><div class="cust"><span class="cust-tag">同一鍋</span>分給 '+F.batch.length+' 張訂單，共用一個批號</div><div class="hint">批號只要設定一次，會套用到下面全部訂單</div></div>':
    '<div class="sheet-h"><div class="cust"><span class="cust-tag">客戶</span>'+esc(t.customer)+'</div><div class="pname">'+esc(t.productName)+' <span class="mono">× '+qtyU(t)+'</span></div><div class="meta">'+shipPill(t)+methodPill(t,1)+'</div>'+(t.note?'<div class="note-box">備註：'+esc(t.note)+'</div>':'')+'</div>');
   h+='<div class="sec"><div class="lbl"><i class="sn">1</i>操作人</div><div class="chips">'+(people.length?people.map(n=>'<button class="chip" data-op="'+esc(n)+'" aria-pressed="'+(F.operator===n)+'">'+esc(n)+'</button>').join(''):'<span class="hint">還沒有人員名單，請到「設定」新增。</span>')+'</div></div>';
+  h+=F.noLot?'<div class="sec nolot-on"><div class="lbl"><i class="sn">2</i>批號</div><div class="nolot-box"><span class="nolot-ic" aria-hidden="true">∅</span><div><b>無批號</b><small>這個品項不需要批號（包材等），直接填數量完成即可</small></div><button type="button" id="fnolot" class="nolot-undo">改回輸入批號</button></div></div>'
+    :'<button type="button" id="fnolot" class="nolot-skip"><span aria-hidden="true">⏭</span><span><b>跳過批號</b><small>包材等沒有批號的品項，按這裡直接下一步</small></span></button>';
+  if(!F.noLot){
   h+='<div class="sec"><div class="lbl"><i class="sn">2</i>產品類別</div><div class="chips">'+Object.keys(c.cats).map(k=>'<button class="chip" data-cat="'+esc(k)+'" aria-pressed="'+(F.cat===k)+'">'+esc(k)+' '+esc(c.cats[k].name)+'</button>').join('')+'</div>'+
    (!F.cat?'<div class="warn">這個品項還沒設定類別，請點選正確的類別（可到「設定」的品項主檔設定一次，以後就會自動帶入）。</div>':'')+
    (F.cat&&F.defCat&&F.cat!==F.defCat?'<div class="warn">這個品項預設是 '+esc(F.defCat)+' '+esc(catName(F.defCat))+'，你改成了 '+esc(F.cat)+' '+esc(catName(F.cat))+'。確認無誤再完成。</div>':'')+'</div>';
@@ -564,6 +595,7 @@ function drawFinish(){
   else if(ready())h+='<div class="hint">批號產生中…</div>';
   h+='</div>';
   }
+  }
   if(F.batch){
     h+='<div class="sec"><div class="lbl"><i class="sn">4</i>各訂單完成數量（少於訂單的部分會留在看板）</div><div style="display:flex;flex-direction:column;gap:8px">'+
       F.batch.map(b=>'<div class="bline"><div style="min-width:0;flex:1"><div class="bcust">'+esc(b.customer)+'</div><div class="hint">'+esc(b.productName)+'　訂單 '+qtyU(b)+(b.note?'　<span style="color:var(--amber)">備註：'+esc(b.note)+'</span>':'')+'</div></div>'+
@@ -572,9 +604,9 @@ function drawFinish(){
     const sc=$('#scrim')?$('.sheet').scrollTop:0;$('#modal').innerHTML=h;$('.sheet').scrollTop=sc;return;
   }
   const used=F.lots.reduce((s,l)=>s+l.qty,0),left=t.qty-used,cur=parseInt(F.qty,10)||0,tot=used+cur,u=t.unit?' '+t.unit:'';
-  h+='<div class="sec"><label class="lbl" for="fqty"><i class="sn">4</i>'+(F.lots.length?'這個批號的數量':'這個批號的數量（一筆用到兩個批號時，先填第一批的數量，再按下面「＋ 再加一個批號」）')+'</label>'+
+  h+='<div class="sec"><label class="lbl" for="fqty"><i class="sn">4</i>'+(F.noLot?'完成數量（少於訂單的部分會留在看板）':F.lots.length?'這個批號的數量':'這個批號的數量（一筆用到兩個批號時，先填第一批的數量，再按下面「＋ 再加一個批號」）')+'</label>'+
     '<div class="row" style="flex-wrap:nowrap"><input id="fqty" class="mono" type="number" inputmode="numeric" min="1" max="'+left+'" value="'+esc(F.qty)+'" style="font-size:22px;flex:1"><span class="hint" style="white-space:nowrap">'+esc(t.unit||'')+'</span></div>'+
-    '<button type="button" id="faddlot" style="align-self:flex-start">＋ 再加一個批號</button></div>';
+    (F.noLot?'':'<button type="button" id="faddlot" style="align-self:flex-start">＋ 再加一個批號</button>')+'</div>';
   if(F.lots.length){
     h+='<div class="sec"><div class="lbl">這筆訂單的批號</div><div style="display:flex;flex-direction:column;gap:6px">'+
       F.lots.map((l,i)=>'<div class="row" style="justify-content:space-between;flex-wrap:nowrap;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 12px"><span class="mono" style="font-size:20px;font-weight:600">'+esc(l.lot)+'</span><span class="mono">× '+num(l.qty)+esc(u)+'</span><button type="button" data-dellot="'+i+'" aria-label="移除這個批號" style="min-height:40px;padding:4px 12px;color:var(--red)">✕</button></div>').join('')+
@@ -608,6 +640,7 @@ $('#modal').addEventListener('click',e=>{
     if(k==='clr'){F.matDate='';F.matArr='';F.arrSet=false;F.step='date'}
     else if(k==='del'){F.matDate=F.matDate.slice(0,-1);F.arrSet=false;F.matArr='';F.step='date'}
     else if(F.matDate.length<4){F.matDate+=k;if(F.matDate.length===4)F.step='arr'}}
+  else if(b.id==='fnolot'){F.noLot=!F.noLot;F.lots=[];F.err='';Snd.play('tap');return drawFinish()}
   else if(b.id==='faddlot')return addLot();
   else if(b.dataset.dellot!==undefined){F.lots.splice(+b.dataset.dellot,1)}
   else if(b.id==='fok')return finishConfirm();
@@ -616,12 +649,12 @@ $('#modal').addEventListener('click',e=>{
 async function batchConfirm(){
   const fail=m=>{F.err=m;drawFinish()};
   if(!F.operator)return fail('請先點選操作人');
-  const savedQty=F.qty;F.qty='1';const ce=curLotErr();F.qty=savedQty;if(ce)return fail(ce);
+  if(!F.noLot){const savedQty=F.qty;F.qty='1';const ce=curLotErr();F.qty=savedQty;if(ce)return fail(ce)}
   const items=F.batch.map(b=>({id:b.id,qty:parseInt(F.bq[b.id],10)}));
   for(const it of items){const b=F.batch.find(x=>x.id===it.id);if(!it.qty||it.qty<1||it.qty>b.qty)return fail(b.customer+'：數量需介於 1 到 '+b.qty)}
   F.busy=true;drawFinish();
   try{
-    const r=await api('POST','/api/tasks/finish-batch',{operator:F.operator,cat:F.cat,variety:F.variety,matDate:F.matDate,matArr:F.matArr,lot:F.mlot,items});
+    const r=await api('POST','/api/tasks/finish-batch',{noLot:!!F.noLot,operator:F.operator,cat:F.cat,variety:F.variety,matDate:F.matDate,matArr:F.matArr,lot:F.mlot,items});
     const names=F.batch.map(b=>b.customer);F.batch.forEach(b=>S.mine.add(b.id));F=null;S.pick=null;$('#modal').innerHTML='';
     celebrate('同一批完成 '+r.count+' 筆訂單',names.slice(0,4).join('、')+(names.length>4?' 等':'')+(r.rest?'（'+r.rest+' 筆有剩餘留在看板）':''),[r.lot]);
     await refresh(true);render(true);
@@ -690,6 +723,12 @@ async function finishConfirm(){
   const t=F.t,q=parseInt(F.qty,10);
   const fail=m=>{F.err=m;drawFinish()};
   if(!F.operator)return fail('請先點選操作人');
+  if(F.noLot){if(!q||q<1||q>t.qty)return fail('數量需介於 1 到 '+t.qty);F.busy=true;drawFinish();
+    try{const r=await api('POST','/api/tasks/'+t.id+'/finish',{operator:F.operator,noLot:true,qty:q});
+      S.mine.add(t.id);F=null;$('#modal').innerHTML='';const p=S.products.find(x=>x.id===t.productId);if(p)p.no_lot=true;
+      celebrate(t.customer,t.productName+(r.rest>0?'（剩 '+num(r.rest)+(t.unit?' '+t.unit:'')+' 留在看板）':''),['無批號']);
+      await refresh(true);render(true)}catch(e){if(F){F.busy=false;fail(e.message)}}
+    return}
   if(!F.cat)return fail('請先選擇產品類別');
   const ce=curLotErr();if(ce)return fail(ce);
   const lots=F.lots.concat([curLot()]),tot=lots.reduce((s,l)=>s+l.qty,0);
