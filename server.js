@@ -101,6 +101,7 @@ async function migrate() {
       code TEXT NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS address TEXT NOT NULL DEFAULT '';
     CREATE TABLE IF NOT EXISTS customer_products (
       customer TEXT NOT NULL,
       product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -213,7 +214,7 @@ app.get('/api/state', wrap(async (req, res) => {
     pool.query(`SELECT * FROM tasks WHERE status = 'done' ORDER BY completed_at DESC LIMIT 2000`),
     pool.query(`SELECT * FROM products ORDER BY code NULLS LAST, name`),
     getConfig(),
-    pool.query(`SELECT id, name, code FROM customers ORDER BY name`),
+    pool.query(`SELECT id, name, code, address FROM customers ORDER BY name`),
     pool.query(`SELECT customer, product_id, times FROM customer_products ORDER BY times DESC, last_at DESC`),
     pool.query(`SELECT product_id, lot, MAX(completed_at) AS at FROM tasks
                 WHERE status='done' AND lot ~ '^[A-Z0-9]+-[A-Z]$' AND completed_at > now() - interval '400 days'
@@ -234,8 +235,113 @@ app.get('/api/state', wrap(async (req, res) => {
     recentLots,
     config,
     now: taipeiParts(),
+    plan: smartPlan(open.rows, customers.rows, config),
   });
 }));
+
+/* ---------- smart scheduling: merge same batch, earliest ship date first, logistics → own delivery → pickup ---------- */
+const METHOD_RANK = { '物流配送': 0, '公司配送': 1, '': 1, '門市自取': 2 };
+const MERGE_DAYS = 2; // pull a later order forward to share a batch when it ships within this many days
+const addDaysStr = (s, n) => { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+function regionOf(addr) {
+  const a = String(addr || '').replace(/\s/g, '').replace(/^\d{3,6}/, '').replace(/台/g, '臺');
+  const m = a.match(/^(.{2}[市縣])(.{1,4}?[區鄉鎮市])/);
+  if (m) return m[1] + m[2];
+  const c = a.match(/^(.{2}[市縣])/);
+  return c ? c[1] : '';
+}
+function smartPlan(open, customers, cfg) {
+  const tp = taipeiParts(), td = tp.y + '-' + tp.m + '-' + tp.d;
+  const cats = (cfg && cfg.cats) || {}, vars = (cfg && cfg.varieties) || {};
+  const eff = (t) => (t.ship_date < td ? td : t.ship_date);
+  const keyOf = (t) => (t.cat ? 'c:' + t.cat + '|' + (t.variety || '') : 'p:' + t.product_id);
+  const labelOf = (t) => {
+    if (!t.cat) return t.product_name;
+    const vn = (vars[t.cat] || {})[t.variety] || '';
+    return ((cats[t.cat] || {}).name || t.cat) + (vn ? '・' + vn : '') + '（' + t.cat + (t.variety || '') + '）';
+  };
+  const urgent = open.filter((t) => t.urgent).sort((a, b) => String(a.urgent_at).localeCompare(String(b.urgent_at)) || a.sort_order - b.sort_order);
+  const rest = open.filter((t) => !t.urgent).sort((a, b) => eff(a).localeCompare(eff(b)) || a.ship_date.localeCompare(b.ship_date) || a.sort_order - b.sort_order);
+  const clusters = [];
+  for (const t of rest) {
+    const k = keyOf(t), d = eff(t);
+    let c = clusters.find((x) => x.key === k && d <= addDaysStr(x.anchor, MERGE_DAYS));
+    if (!c) { c = { key: k, anchor: d, label: labelOf(t), tasks: [], cat: t.cat || '~', variety: t.variety || '' }; clusters.push(c); }
+    c.tasks.push(t);
+  }
+  clusters.forEach((c) => {
+    c.over = c.tasks.some((t) => t.ship_date < td);
+    c.mrank = Math.min(...c.tasks.map((t) => METHOD_RANK[t.ship_method] ?? 1));
+    c.tasks.sort((a, b) => eff(a).localeCompare(eff(b)) || (METHOD_RANK[a.ship_method] ?? 1) - (METHOD_RANK[b.ship_method] ?? 1) || a.product_id - b.product_id || a.sort_order - b.sort_order);
+    // keep the same package next to each other inside a batch
+    const seen = []; c.tasks.forEach((t) => { if (!seen.includes(t.product_id)) seen.push(t.product_id); });
+    c.tasks.sort((a, b) => seen.indexOf(a.product_id) - seen.indexOf(b.product_id));
+  });
+  clusters.sort((a, b) => a.anchor.localeCompare(b.anchor) || (b.over - a.over) || a.mrank - b.mrank || a.cat.localeCompare(b.cat) || a.variety.localeCompare(b.variety) || b.tasks.length - a.tasks.length);
+  const order = urgent.map((t) => t.id).concat(...clusters.map((c) => c.tasks.map((t) => t.id)));
+  const current = open.filter((t) => !t.urgent).slice().sort((a, b) => a.sort_order - b.sort_order || a.id - b.id).map((t) => t.id);
+  const planRest = order.slice(urgent.length);
+  const moved = planRest.filter((id, i) => current[i] !== id).length;
+
+  const sumUnits = (ts) => { const u = {}; ts.forEach((t) => { u[t.unit || ''] = (u[t.unit || ''] || 0) + t.qty; }); return Object.entries(u).map(([k, v]) => v + (k ? ' ' + k : '')).join('＋'); };
+  const merges = clusters.filter((c) => c.tasks.length > 1).map((c) => {
+    const dates = [...new Set(c.tasks.map((t) => t.ship_date))].sort();
+    const pulled = c.tasks.filter((t) => eff(t) > c.anchor);
+    return {
+      label: c.label, ids: c.tasks.map((t) => t.id), orders: c.tasks.length,
+      customers: [...new Set(c.tasks.map((t) => t.customer))].length,
+      products: [...new Set(c.tasks.map((t) => t.product_name))],
+      total: sumUnits(c.tasks), dates, anchor: c.anchor, pulled: pulled.length,
+      shareLot: !!c.tasks[0].cat,
+    };
+  }).filter((m) => m.anchor <= addDaysStr(td, 3)).slice(0, 12);
+
+  // delivery: own-truck orders grouped by day → region
+  const addr = {}; customers.forEach((c) => { addr[c.name] = c.address || ''; });
+  const horizon = addDaysStr(td, 3);
+  const own = open.filter((t) => t.ship_method === '公司配送' && eff(t) <= horizon);
+  const days = {};
+  own.forEach((t) => {
+    const d = eff(t), r = regionOf(addr[t.customer]) || '未填地址';
+    const day = days[d] = days[d] || {};
+    const g = day[r] = day[r] || { region: r, customers: {}, n: 0 };
+    g.customers[t.customer] = (g.customers[t.customer] || 0) + 1; g.n++;
+  });
+  const routes = Object.keys(days).sort().map((d) => ({
+    date: d,
+    stops: Object.values(days[d]).map((g) => ({ region: g.region, customers: Object.keys(g.customers), orders: g.n }))
+      .sort((a, b) => (a.region === '未填地址') - (b.region === '未填地址') || a.region.localeCompare(b.region, 'zh-Hant')),
+  }));
+  // same customer, different nearby days → one trip
+  const byCust = {};
+  own.forEach((t) => { (byCust[t.customer] = byCust[t.customer] || new Set()).add(eff(t)); });
+  const combine = Object.entries(byCust).filter(([, s]) => s.size > 1).map(([c, s]) => ({ customer: c, dates: [...s].sort() }));
+  // same region on adjacent days → could go on one trip
+  const regionDays = {};
+  routes.forEach((r) => r.stops.forEach((s) => { if (s.region !== '未填地址') (regionDays[s.region] = regionDays[s.region] || []).push(r.date); }));
+  const sameArea = Object.entries(regionDays).filter(([, ds]) => ds.length > 1).map(([region, dates]) => ({ region, dates }));
+  const noAddr = [...new Set(own.filter((t) => !regionOf(addr[t.customer])).map((t) => t.customer))];
+  const logistics = {};
+  open.filter((t) => t.ship_method === '物流配送' && eff(t) <= horizon).forEach((t) => { logistics[eff(t)] = (logistics[eff(t)] || 0) + 1; });
+  const noMethod = open.filter((t) => !t.ship_method && eff(t) <= horizon).length;
+  return { order, moved, merges, routes, combine, sameArea, noAddr, logistics, noMethod, auto: !!(cfg && cfg.autoPlan), today: td };
+}
+async function applyPlan(client) {
+  const db = client || pool;
+  const [{ rows: open }, { rows: customers }, cfg] = await Promise.all([
+    db.query(`SELECT * FROM tasks WHERE status='open'`), db.query(`SELECT name, address FROM customers`), getConfig(client)]);
+  const p = smartPlan(open, customers, cfg);
+  for (let i = 0; i < p.order.length; i++) await db.query(`UPDATE tasks SET sort_order=$1 WHERE id=$2 AND status='open'`, [(i + 1) * 10, p.order[i]]);
+  return p;
+}
+async function autoPlan() {
+  try { const cfg = await getConfig(); if (cfg && cfg.autoPlan) { await applyPlan(); await bump(); } } catch (e) { console.error('autoPlan', e.message); }
+}
+async function saveAddress(customer, address) {
+  address = str(address, 200);
+  if (!customer || !address) return;
+  await pool.query(`INSERT INTO customers (name, address) VALUES ($1,$2) ON CONFLICT (name) DO UPDATE SET address=EXCLUDED.address`, [customer, address]);
+}
 
 /* orders */
 const UNITS = ['桶', '箱', '瓶'];
@@ -312,6 +418,8 @@ app.post('/api/tasks/batch', wrap(async (req, res) => {
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   for (const o of orders) await rememberPurchase(o.customer, o.product.id);
+  if (orders[0].shipMethod === '公司配送') await saveAddress(orders[0].customer, b.address);
+  await autoPlan();
   res.json({ created: orders.length, ids: orders.map((o) => o.id) });
 }));
 
@@ -323,7 +431,9 @@ app.put('/api/tasks/:id', wrap(async (req, res) => {
     [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, req.params.id, o.unit, o.shipMethod]
   );
   if (!rowCount) throw new UserError('這筆訂單已完成或已取消，無法修改');
+  if (o.shipMethod === '公司配送') await saveAddress(o.customer, (req.body || {}).address);
   await bump();
+  await autoPlan();
   res.json({ ok: true });
 }));
 
@@ -389,6 +499,33 @@ async function nextSeq(client, prefix) {
   rows.forEach((r) => { const m = re.exec(r.lot || ''); if (m) max = Math.max(max, m[1].charCodeAt(0) - 65); });
   return max + 1;
 }
+
+app.post('/api/plan/apply', wrap(async (req, res) => {
+  const client = await pool.connect();
+  let p;
+  try {
+    await client.query('BEGIN');
+    p = await applyPlan(client);
+    await bump(client);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+  res.json({ ok: true, moved: p.moved });
+}));
+app.post('/api/plan/auto', wrap(async (req, res) => {
+  const on = !!(req.body && req.body.on);
+  await pool.query(`UPDATE config SET data = jsonb_set(data, '{autoPlan}', $1::jsonb) WHERE id=1`, [JSON.stringify(on)]);
+  if (on) await applyPlan();
+  await bump();
+  res.json({ ok: true, on });
+}));
+app.post('/api/customers/address', wrap(async (req, res) => {
+  const b = req.body || {};
+  const name = str(b.name, 100), address = str(b.address, 200);
+  if (!name) throw new UserError('缺少客戶名稱');
+  await pool.query(`INSERT INTO customers (name, address) VALUES ($1,$2) ON CONFLICT (name) DO UPDATE SET address=EXCLUDED.address`, [name, address]);
+  await bump();
+  res.json({ ok: true, region: regionOf(address) });
+}));
 
 app.post('/api/lot-preview', wrap(async (req, res) => {
   const cfg = await getConfig();
