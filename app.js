@@ -46,6 +46,43 @@ function drawBell(){const b=$('#bell');if(!b)return;b.setAttribute('aria-pressed
 document.addEventListener('click',e=>{if(e.target.closest('#bell')){Snd.on=!Snd.on;store.set('tsb_snd',Snd.on?'1':'0');drawBell();if(Snd.on){Snd.play('notify');setTimeout(()=>Voice.say('語音提示已開啟'),600)}}});
 drawBell();
 
+/* ---------- urgent-order alarm (fire-engine siren + voice, until someone taps 收到) ---------- */
+S.ack=new Set();try{JSON.parse(store.get('tsb_ack')||'[]').forEach(k=>S.ack.add(k))}catch(e){}
+function saveAck(){store.set('tsb_ack',JSON.stringify([...S.ack].slice(-300)))}
+const Siren={nodes:null,timer:null,
+  start(){Snd.unlock();const c=Snd.ctx;if(!c||this.nodes)return;try{
+    const o=c.createOscillator(),o2=c.createOscillator(),lfo=c.createOscillator(),lg=c.createGain(),lg2=c.createGain(),f=c.createBiquadFilter(),g=c.createGain();
+    o.type='sawtooth';o.frequency.value=900;o2.type='square';o2.frequency.value=902;
+    lfo.type='triangle';lfo.frequency.value=0.42;lg.gain.value=430;lg2.gain.value=430;
+    lfo.connect(lg);lg.connect(o.frequency);lfo.connect(lg2);lg2.connect(o2.frequency);
+    f.type='lowpass';f.frequency.value=3000;g.gain.setValueAtTime(0.0001,c.currentTime);g.gain.exponentialRampToValueAtTime(0.2,c.currentTime+0.25);
+    o.connect(f);o2.connect(f);f.connect(g);g.connect(c.destination);o.start();o2.start();lfo.start();this.nodes=[o,o2,lfo,g]}catch(e){}},
+  stop(){if(!this.nodes)return;const [o,o2,l,g]=this.nodes,c=Snd.ctx;this.nodes=null;
+    try{g.gain.setTargetAtTime(0.0001,c.currentTime,0.06);[o,o2,l].forEach(n=>n.stop(c.currentTime+0.35))}catch(e){}}};
+let AL=null;
+const urgKey=t=>t.id+':'+(t.urgentAt||'');
+function urgentPending(){return S.open.filter(t=>t.urgent&&!S.ack.has(urgKey(t))&&!S.ack.has(t.id+':*'))}
+function checkUrgent(){
+  const pend=urgentPending();
+  if(S.tab!=='board'||!pend.length){alarmOff();return}
+  alarmOn(pend);
+}
+function alarmCycle(){if(!AL)return;Siren.start();
+  AL.t1=setTimeout(()=>{if(!AL)return;Siren.stop();if('speechSynthesis' in window){try{const u=new SpeechSynthesisUtterance('緊急訂單！'+[...new Set(AL.pend.map(t=>spokenName(t.customer)))].slice(0,3).join('、')+'，請優先生產！');u.lang='zh-TW';const v=Voice.pick();if(v)u.voice=v;u.rate=1;u.onend=()=>{if(AL)AL.t2=setTimeout(alarmCycle,400)};speechSynthesis.speak(u);AL.t2=setTimeout(alarmCycle,7000)}catch(e){AL.t2=setTimeout(alarmCycle,600)}}else AL.t2=setTimeout(alarmCycle,600)},9000)}
+function alarmOn(pend){
+  const sig=pend.map(urgKey).join(',');
+  if(AL&&AL.sig===sig)return;
+  const fresh=!AL;AL=Object.assign(AL||{},{pend,sig});
+  let box=$('#alarm');if(!box){box=document.createElement('div');box.id='alarm';box.setAttribute('role','alertdialog');box.setAttribute('aria-label','緊急單');document.body.appendChild(box)}
+  box.innerHTML='<div class="al-box"><div class="al-ic" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M32 6l26 46H6z" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/><path d="M32 24v14" stroke="currentColor" stroke-width="5" stroke-linecap="round"/><circle cx="32" cy="45" r="3.2" fill="currentColor"/></svg></div>'+
+    '<div class="al-k">緊急單</div><div class="al-sub">請先暫停手上的工作，優先生產以下訂單</div><div class="al-list">'+
+    pend.map(t=>'<div class="al-row"><b>'+esc(t.customer)+'</b><span>'+esc(t.productName)+'</span><em>'+num(t.qty)+(t.unit?' '+esc(t.unit):'')+'</em></div>').join('')+
+    '</div><button type="button" id="alack" class="al-btn">收到，馬上生產</button></div>';
+  if(fresh){if(navigator.vibrate)try{navigator.vibrate([400,200,400,200,800])}catch(e){}alarmCycle()}
+}
+function alarmOff(){if(!AL)return;clearTimeout(AL.t1);clearTimeout(AL.t2);AL=null;Siren.stop();try{speechSynthesis.cancel()}catch(e){}const b=$('#alarm');if(b)b.remove()}
+document.addEventListener('click',e=>{if(e.target.closest('#alack')){urgentPending().forEach(t=>S.ack.add(urgKey(t)));saveAck();alarmOff();Snd.play('tap');render(true)}});
+
 /* ---------- completion feedback ---------- */
 function celebrate(title,sub,lots){
   const box=document.createElement('div');box.className='celebrate';box.setAttribute('role','status');
@@ -92,7 +129,7 @@ async function refresh(force){
     if(!force){const {rev}=await api('GET','/api/rev');if(rev===S.rev)return}
     const s=await api('GET','/api/state');
     detectRemoteDone(s.done);
-    S.rev=s.rev;S.open=s.open;S.done=s.done;S.products=s.products;S.recentLots=s.recentLots||{};S.customers=s.customers||[];S.history=s.history||[];S.cfg=s.config;
+    S.rev=s.rev;S.open=s.open;setTimeout(checkUrgent,0);S.done=s.done;S.products=s.products;S.recentLots=s.recentLots||{};S.customers=s.customers||[];S.history=s.history||[];S.cfg=s.config;
     setStatus('已連線，資料每 3 秒自動同步');
     if(!F)render();
   }catch(e){if(e.message!=='需要密碼')setStatus('連線中斷，正在重新連線…')}
@@ -113,7 +150,7 @@ function showPin(){
 /* ---------- tabs ---------- */
 $('#tabs').addEventListener('click',e=>{const b=e.target.closest('button[data-tab]');if(!b)return;S.tab=b.dataset.tab;
   document.querySelectorAll('#tabs button').forEach(x=>x.setAttribute('aria-selected',x===b?'true':'false'));
-  ['board','orders','records','settings'].forEach(k=>$('#v-'+k).hidden=k!==S.tab);document.body.classList.toggle('bd',S.tab==='board');render(true);store.set('tsb_tab',S.tab)});
+  ['board','orders','records','settings'].forEach(k=>$('#v-'+k).hidden=k!==S.tab);document.body.classList.toggle('bd',S.tab==='board');render(true);checkUrgent();store.set('tsb_tab',S.tab)});
 document.body.classList.add('bd');
 {const t=store.get('tsb_tab');if(t){const b=document.querySelector('#tabs button[data-tab="'+t+'"]');if(b)b.click()}}
 
@@ -123,7 +160,7 @@ function shipPill(t){const td=today();
   if(t.shipDate===td)return '<span class="pill p-today">今日出貨</span>';
   if(t.shipDate===addDays(td,1))return '<span class="pill p-tom">明日出貨</span>';
   return '<span class="pill p-later">'+esc(t.shipDate.slice(5).replace('-','/'))+' 出貨</span>'}
-function boardTasks(){const lim=addDays(today(),2);return S.open.filter(t=>t.shipDate<=lim).sort((a,b)=>(a.order||0)-(b.order||0))}
+function boardTasks(){const lim=addDays(today(),2);return S.open.filter(t=>t.urgent||t.shipDate<=lim).sort((a,b)=>(b.urgent?1:0)-(a.urgent?1:0)||String(a.urgentAt||'').localeCompare(String(b.urgentAt||''))||(a.order||0)-(b.order||0))}
 function boxComps(pid){const p=S.products.find(x=>x.id===pid);return p&&(p.components||[]).length?p.components.map(id=>S.products.find(x=>x.id===id)).filter(Boolean):[]}
 function shortName(n){return String(n).replace(/^尋蜜趣[-－]/,'')}
 function catName(c){return (cfg().cats[c]||{}).name||c}
@@ -174,9 +211,9 @@ function renderBoard(){
     '<div class="list'+(S.pick?' picking':'')+'" id="blist">'+list.map((t,i)=>{
     const bx=boxComps(t.productId),on=S.pick&&S.pick.has(t.id),next=!S.pick&&i===0;
     const code=bx.length?'<span class="pill p-box">禮盒：'+esc(bx.map(p=>shortName(p.name)).join('＋'))+'</span>':t.cat?'<span class="pill p-code">'+esc(t.cat)+esc(t.variety||'')+'</span><span class="pill p-cat">'+esc(catName(t.cat))+((cfg().cats[t.cat]||{}).auto?' 🔒':'')+'</span>':'<span class="pill p-tom">未設類別</span>';
-    return '<div class="card'+(t.shipDate<td?' over':t.shipDate===td?' u-today':t.shipDate===addDays(td,1)?' u-tom':'')+(on?' picked':'')+(next?' next':'')+'" data-id="'+t.id+'"'+(S.pick?' role="checkbox" aria-checked="'+on+'" tabindex="0"':'')+'>'+
+    return '<div class="card'+(t.shipDate<td?' over':t.shipDate===td?' u-today':t.shipDate===addDays(td,1)?' u-tom':'')+(on?' picked':'')+(next?' next':'')+(t.urgent?' urgent':'')+'" data-id="'+t.id+'"'+(S.pick?' role="checkbox" aria-checked="'+on+'" tabindex="0"':'')+'>'+
       '<div class="c-top">'+(S.pick?'<span class="pickbox'+(on?' on':'')+'" aria-hidden="true">'+(on?'✓':'')+'</span>':'<span class="grip" aria-label="拖曳排序" title="拖曳排序">⠿</span><span class="seq">'+pad(i+1)+'</span>')+
-        (next?'<span class="next-tag">現在生產</span>':'')+shipCell(t,td)+'</div>'+
+        (t.urgent?'<span class="urg-tag">緊急單</span>':'')+(next&&!t.urgent?'<span class="next-tag">現在生產</span>':'')+shipCell(t,td)+'</div>'+
       '<div class="cust">'+esc(t.customer)+'</div><div class="pname">'+esc(t.productName)+'</div>'+
       '<div class="meta">'+code+(t.parentId?'<span class="pill p-later">續做</span>':'')+'</div>'+
       (t.note?'<div class="note-box">備註：'+esc(t.note)+'</div>':'')+
@@ -436,7 +473,7 @@ async function finishConfirm(){
 
 /* ---------- orders ---------- */
 const OF={cust:'',date:'',note:'',lines:[{p:'',q:'',u:''}]};
-function resetOrderForm(){OF.cust='';OF.date=today();OF.note='';OF.lines=[{p:'',q:'',u:''}]}
+function resetOrderForm(){OF.urgent=false;OF.cust='';OF.date=today();OF.note='';OF.lines=[{p:'',q:'',u:''}]}
 resetOrderForm();
 function renderOrders(){
   const v=$('#v-orders'),prods=S.products.filter(p=>p.active!==false);
@@ -451,7 +488,8 @@ function renderOrders(){
    '<div style="grid-column:1/-1;display:flex;flex-direction:column;gap:8px"><div class="lbl" style="font-size:13px;color:var(--muted)">品項、數量與單位</div><div id="o-lines" style="display:flex;flex-direction:column;gap:8px"></div>'+
    (ed?'':'<button type="button" id="o-addline" style="align-self:flex-start">＋ 新增品項</button>')+'</div>'+
    '<label class="f" for="o-date">指定出貨日<input id="o-date" type="date" value="'+esc(OF.date)+'"></label>'+
-   '<label class="f" for="o-note" style="grid-column:1/-1">備註（選填，套用到這張訂單的所有品項）<input id="o-note" placeholder="外箱貼客戶標" value="'+esc(OF.note)+'"></label></div>'+
+   '<label class="f" for="o-note" style="grid-column:1/-1">備註（選填，套用到這張訂單的所有品項）<input id="o-note" placeholder="外箱貼客戶標" value="'+esc(OF.note)+'"></label>'+
+   (ed?'':'<button type="button" id="o-urg" class="urg-toggle" aria-pressed="'+!!OF.urgent+'" style="grid-column:1/-1"><span class="urg-box" aria-hidden="true"></span><span><b>緊急單</b><small>勾選後生產端會響警報，並排到看板最前面</small></span></button>')+'</div>'+
    '<div class="err" id="oerr"></div><div class="row"><button type="submit" class="primary" id="o-submit"></button>'+(ed?'<button type="button" id="o-cancel">取消修改</button>':'')+'</div>'+
    (prods.length?'':'<p class="hint">還沒有品項，請先到「設定」新增品項或匯入新高手資料。</p>')+'</form>';
   const lim=addDays(today(),2);
@@ -463,8 +501,8 @@ function renderOrders(){
   else h+=Object.keys(grp).map(d=>'<div class="ogrp'+(d<td?' g-over':d===td?' g-today':'')+'"><div class="ogrp-h"><b>'+dlabel(d)+'</b><span>'+grp[d].length+' 筆</span></div>'+
     grp[d].map(t=>'<div class="orow"><div class="orow-m"><b>'+esc(t.customer)+'</b><span>'+esc(t.productName)+'</span>'+(t.note?'<em>'+esc(t.note)+'</em>':'')+'</div>'+
       '<div class="orow-q"><b>'+num(t.qty)+'</b><span>'+esc(t.unit||'')+'</span></div>'+
-      (t.shipDate<=lim?'<span class="pill p-on">看板中</span>':'<span class="pill p-later">排隊中</span>')+
-      '<div class="orow-a"><button data-oedit="'+t.id+'">修改</button><button class="danger" data-ovoid="'+t.id+'">取消</button></div></div>').join('')+'</div>').join('');
+      (t.urgent?'<span class="pill p-urg">緊急</span>':t.shipDate<=lim?'<span class="pill p-on">看板中</span>':'<span class="pill p-later">排隊中</span>')+
+      '<div class="orow-a"><button data-ourg="'+t.id+'" data-on="'+(t.urgent?0:1)+'" class="'+(t.urgent?'':'urg-btn')+'">'+(t.urgent?'取消緊急':'設為緊急')+'</button><button data-oedit="'+t.id+'">修改</button><button class="danger" data-ovoid="'+t.id+'">取消</button></div></div>').join('')+'</div>').join('');
   h+='</section></div>';
   v.innerHTML=h;renderLines();renderHist();
 }
@@ -524,8 +562,9 @@ $('#v-orders').addEventListener('submit',async e=>{
     if(!l.p)return err(n+'請選擇品項');if(!(+l.q>0))return err(n+'數量需大於 0');if(!l.u)return err(n+'請選擇單位（桶、箱、瓶）')}
   const id=S.editOrder;
   const r=await act(()=>id?api('PUT','/api/tasks/'+id,{customer,productId:lines[0].p,qty:lines[0].q,unit:lines[0].u,shipDate,note})
-    :api('POST','/api/tasks/batch',{customer,shipDate,note,items:lines.map(l=>({productId:l.p,qty:l.q,unit:l.u}))}),
-    id?'訂單已更新':'已加入排程（'+lines.length+' 個品項）');
+    :api('POST','/api/tasks/batch',{customer,shipDate,note,urgent:!!OF.urgent,items:lines.map(l=>({productId:l.p,qty:l.q,unit:l.u}))}),
+    id?'訂單已更新':(OF.urgent?'緊急單已送出，生產端正在響警報':'已加入排程（'+lines.length+' 個品項）'));
+  if(r&&r.ids)r.ids.forEach(i=>S.ack.add(i+':*'));saveAck();
   if(r){S.editOrder=null;OF.editing=null;resetOrderForm();document.activeElement&&document.activeElement.blur();renderOrders()}
 });
 $('#v-orders').addEventListener('click',async e=>{
@@ -539,6 +578,9 @@ $('#v-orders').addEventListener('click',async e=>{
     let i=OF.lines.findIndex(l=>!l.p);if(i<0){OF.lines.push({p:'',q:'',u:''});i=OF.lines.length-1}
     OF.lines[i].p=pid;OF.lines[i].u=guessUnit(S.products.find(p=>String(p.id)===pid));renderLines();
     const q=$('#o-lines').querySelectorAll('.l-qty')[i];if(q)q.focus();return}
+  if(b.id==='o-urg'){OF.urgent=!OF.urgent;b.setAttribute('aria-pressed',String(OF.urgent));if(OF.urgent)Snd.play('tap');return}
+  if(b.dataset.ourg){const on=b.dataset.on==='1';if(on)S.ack.add(b.dataset.ourg+':*');saveAck();
+    await act(()=>api('POST','/api/tasks/'+b.dataset.ourg+'/urgent',{on}),on?'已設為緊急單，生產端正在響警報':'已取消緊急');return}
   if(b.dataset.oedit){S.editOrder=+b.dataset.oedit;renderOrders();window.scrollTo({top:0,behavior:'smooth'})}
   else if(b.id==='o-cancel'){S.editOrder=null;renderOrders()}
   else if(b.dataset.ovoid){if(b.dataset.armed!=='1'){b.dataset.armed='1';b.textContent='再按一次確認';return}

@@ -92,6 +92,8 @@ async function migrate() {
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS contents JSONB;
     CREATE UNIQUE INDEX IF NOT EXISTS products_code_idx ON products(code);
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS unit TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS urgent BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS urgent_at TIMESTAMPTZ;
     CREATE TABLE IF NOT EXISTS customers (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
@@ -142,6 +144,9 @@ async function migrate() {
 
 /* ---------- helpers ---------- */
 async function bump(client) {
+  // leftovers of an urgent order stay urgent
+  await (client || pool).query(`UPDATE tasks c SET urgent=TRUE, urgent_at=p.urgent_at FROM tasks p
+    WHERE c.parent_id=p.id AND p.urgent AND NOT c.urgent AND c.status='open'`);
   await (client || pool).query(`UPDATE meta SET value = value + 1 WHERE key = 'rev'`);
 }
 function taipeiParts(d = new Date()) {
@@ -161,6 +166,7 @@ function rowTask(r) {
     note: r.note, status: r.status, order: r.sort_order, lot: r.lot,
     completedAt: r.completed_at, operator: r.operator, matDate: r.mat_date, matArr: r.mat_arr,
     unit: r.unit || '', contents: r.contents || null, parentId: r.parent_id, lotHistory: r.lot_history, createdAt: r.created_at,
+    urgent: !!r.urgent, urgentAt: r.urgent_at,
   };
 }
 async function getConfig(client) {
@@ -199,7 +205,7 @@ app.get('/api/rev', wrap(async (req, res) => {
 app.get('/api/state', wrap(async (req, res) => {
   const [rev, open, done, products, config, customers, history, recent] = await Promise.all([
     pool.query(`SELECT value FROM meta WHERE key = 'rev'`),
-    pool.query(`SELECT * FROM tasks WHERE status = 'open' ORDER BY sort_order, id`),
+    pool.query(`SELECT * FROM tasks WHERE status = 'open' ORDER BY urgent DESC, urgent_at, sort_order, id`),
     pool.query(`SELECT * FROM tasks WHERE status = 'done' ORDER BY completed_at DESC LIMIT 2000`),
     pool.query(`SELECT * FROM products ORDER BY code NULLS LAST, name`),
     getConfig(),
@@ -286,18 +292,20 @@ app.post('/api/tasks/batch', wrap(async (req, res) => {
     await client.query('BEGIN');
     const { rows: m } = await client.query(`SELECT COALESCE(MAX(sort_order),0) AS mx FROM tasks WHERE status='open'`);
     let order = Number(m[0].mx);
+    const urgent = b.urgent === true;
     for (const o of orders) {
       order += 10;
-      await client.query(
-        `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, unit, sort_order)
-         VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10)`,
-        [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, o.unit, order]);
+      const { rows: ins } = await client.query(
+        `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, unit, sort_order, urgent, urgent_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,CASE WHEN $11 THEN now() END) RETURNING id`,
+        [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, o.unit, order, urgent]);
+      o.id = ins[0].id;
     }
     await bump(client);
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   for (const o of orders) await rememberPurchase(o.customer, o.product.id);
-  res.json({ created: orders.length });
+  res.json({ created: orders.length, ids: orders.map((o) => o.id) });
 }));
 
 app.put('/api/tasks/:id', wrap(async (req, res) => {
@@ -308,6 +316,15 @@ app.put('/api/tasks/:id', wrap(async (req, res) => {
     [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, req.params.id, o.unit]
   );
   if (!rowCount) throw new UserError('這筆訂單已完成或已取消，無法修改');
+  await bump();
+  res.json({ ok: true });
+}));
+
+app.post('/api/tasks/:id/urgent', wrap(async (req, res) => {
+  const on = !!(req.body && req.body.on);
+  const { rowCount } = await pool.query(
+    `UPDATE tasks SET urgent=$1, urgent_at=CASE WHEN $1 THEN now() ELSE NULL END WHERE (id=$2 OR parent_id=$2) AND status='open'`, [on, req.params.id]);
+  if (!rowCount) throw new UserError('這筆訂單已完成或已取消');
   await bump();
   res.json({ ok: true });
 }));
