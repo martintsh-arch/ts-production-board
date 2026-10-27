@@ -116,7 +116,7 @@ function detectRemoteDone(done){
   const gs=Object.values(groups);
   // several items of the same customer → one sentence per customer
   const byCust={};gs.forEach(g=>{const t=g[0],q=g.reduce((s,x)=>s+x.qty,0);(byCust[t.customer]=byCust[t.customer]||[]).push(shortName(t.productName)+' '+q+(t.unit||''))});
-  const speech=Object.keys(byCust).slice(0,4).map(c=>spokenName(c)+' 的訂單已完成生產，'+byCust[c].slice(0,3).join('、'));
+  const speech=Object.keys(byCust).slice(0,4).map(c=>spokenName(c)+'，已完成生產');
   notifyBanner(gs.slice(0,4).map(g=>{const t=g[0],q=g.reduce((s,x)=>s+x.qty,0);
     return t.customer+'｜'+t.productName+' ×'+num(q)+(t.unit?' '+t.unit:'')+'｜'+g.map(x=>x.lot).join('、')}),speech);
 }
