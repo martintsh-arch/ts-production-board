@@ -80,16 +80,27 @@ drawBell();
 /* ---------- urgent-order alarm (fire-engine siren + voice, until someone taps 收到) ---------- */
 S.ack=new Set();try{JSON.parse(store.get('tsb_ack')||'[]').forEach(k=>S.ack.add(k))}catch(e){}
 function saveAck(){store.set('tsb_ack',JSON.stringify([...S.ack].slice(-300)))}
-const Siren={nodes:null,timer:null,
-  start(){Snd.unlock();const c=Snd.ctx;if(!c||this.nodes)return;try{
-    const o=c.createOscillator(),o2=c.createOscillator(),lfo=c.createOscillator(),lg=c.createGain(),lg2=c.createGain(),f=c.createBiquadFilter(),g=c.createGain();
-    o.type='sawtooth';o.frequency.value=900;o2.type='square';o2.frequency.value=902;
-    lfo.type='triangle';lfo.frequency.value=0.42;lg.gain.value=430;lg2.gain.value=430;
-    lfo.connect(lg);lg.connect(o.frequency);lfo.connect(lg2);lg2.connect(o2.frequency);
-    f.type='lowpass';f.frequency.value=3000;g.gain.setValueAtTime(0.0001,c.currentTime);g.gain.exponentialRampToValueAtTime(0.2,c.currentTime+0.25);
-    o.connect(f);o2.connect(f);f.connect(g);g.connect(c.destination);o.start();o2.start();lfo.start();this.nodes=[o,o2,lfo,g]}catch(e){}},
-  stop(){if(!this.nodes)return;const [o,o2,l,g]=this.nodes,c=Snd.ctx;this.nodes=null;
-    try{g.gain.setTargetAtTime(0.0001,c.currentTime,0.06);[o,o2,l].forEach(n=>n.stop(c.currentTime+0.35))}catch(e){}}};
+/* cinematic "red alert" klaxon: sub-bass hit + harsh rising whoop, in a big reverberant hall */
+const Siren={on:false,iv:null,bus:null,
+  build(c){const m=c.createGain();m.gain.value=0.0001;const comp=c.createDynamicsCompressor();comp.threshold.value=-10;comp.ratio.value=6;
+    const rev=c.createConvolver(),len=c.sampleRate*2.2,ir=c.createBuffer(2,len,c.sampleRate);
+    for(let ch=0;ch<2;ch++){const d=ir.getChannelData(ch);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.6)}
+    rev.buffer=ir;const wet=c.createGain();wet.gain.value=0.35;
+    const dist=c.createWaveShaper(),k=28,n=1024,cv=new Float32Array(n);for(let i=0;i<n;i++){const x=i*2/n-1;cv[i]=(3+k)*x*20*Math.PI/180/(Math.PI+k*Math.abs(x))}dist.curve=cv;
+    dist.connect(m);dist.connect(rev);rev.connect(wet);wet.connect(m);m.connect(comp);comp.connect(c.destination);return {m,dist}},
+  whoop(){const c=Snd.ctx;if(!c||!this.bus)return;const t=c.currentTime+0.02,{dist}=this.bus;
+    // sub-bass hit
+    const sub=c.createOscillator(),sg=c.createGain();sub.type='sine';sub.frequency.setValueAtTime(90,t);sub.frequency.exponentialRampToValueAtTime(38,t+0.5);
+    sg.gain.setValueAtTime(0.0001,t);sg.gain.exponentialRampToValueAtTime(0.9,t+0.02);sg.gain.exponentialRampToValueAtTime(0.0001,t+0.6);sub.connect(sg);sg.connect(this.bus.m);sub.start(t);sub.stop(t+0.65);
+    // rising klaxon whoop (two detuned harsh voices)
+    [['sawtooth',0],['square',7],['sawtooth',-9]].forEach(([type,det])=>{const o=c.createOscillator(),g=c.createGain();o.type=type;o.detune.value=det*10;
+      o.frequency.setValueAtTime(260,t);o.frequency.exponentialRampToValueAtTime(980,t+0.78);o.frequency.exponentialRampToValueAtTime(900,t+0.92);
+      g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.16,t+0.05);g.gain.setValueAtTime(0.16,t+0.8);g.gain.exponentialRampToValueAtTime(0.0001,t+0.98);
+      o.connect(g);g.connect(dist);o.start(t);o.stop(t+1.02)})},
+  start(){Snd.unlock();const c=Snd.ctx;if(!c||this.on)return;try{if(!this.bus)this.bus=this.build(c);
+    this.bus.m.gain.cancelScheduledValues(c.currentTime);this.bus.m.gain.setTargetAtTime(0.75,c.currentTime,0.05);
+    this.on=true;this.whoop();this.iv=setInterval(()=>this.whoop(),1250)}catch(e){}},
+  stop(){if(!this.on)return;this.on=false;clearInterval(this.iv);const c=Snd.ctx;try{this.bus.m.gain.setTargetAtTime(0.0001,c.currentTime,0.12)}catch(e){}}};
 let AL=null;
 const urgKey=t=>t.id+':'+(t.urgentAt||'');
 function urgentPending(){return S.open.filter(t=>t.urgent&&!S.ack.has(urgKey(t))&&!S.ack.has(t.id+':*'))}
@@ -148,6 +159,7 @@ function detectRemoteDone(done){
   // several items of the same customer → one sentence per customer
   const byCust={};gs.forEach(g=>{const t=g[0],q=g.reduce((s,x)=>s+x.qty,0);(byCust[t.customer]=byCust[t.customer]||[]).push(shortName(t.productName)+' '+q+(t.unit||''))});
   const speech=Object.keys(byCust).slice(0,4).map(c=>spokenName(c)+'，已完成生產');
+  if(S.tv){tvFlood(gs.slice(0,4).map(g=>{const t=g[0],q=g.reduce((s,x)=>s+x.qty,0);return {customer:t.customer,product:shortName(t.productName)+'　'+num(q)+(t.unit?' '+t.unit:''),lot:g.map(x=>x.lot).join('、')}}));return}
   notifyBanner(gs.slice(0,4).map(g=>{const t=g[0],q=g.reduce((s,x)=>s+x.qty,0);
     return t.customer+'｜'+t.productName+' ×'+num(q)+(t.unit?' '+t.unit:'')+'｜'+g.map(x=>x.lot).join('、')}),speech);
 }
@@ -188,7 +200,7 @@ function showPin(){
 $('#tabs').addEventListener('click',e=>{const b=e.target.closest('button[data-tab]');if(!b)return;S.tab=b.dataset.tab;
   document.querySelectorAll('#tabs button').forEach(x=>x.setAttribute('aria-selected',x===b?'true':'false'));
   ['board','orders','records','settings'].forEach(k=>$('#v-'+k).hidden=k!==S.tab);document.body.classList.toggle('bd',S.tab==='board');render(true);checkUrgent();store.set('tsb_tab',S.tab)});
-document.body.classList.add('bd');
+document.body.classList.add('bd');if(S.tv)document.body.classList.add('tv');
 {const t=store.get('tsb_tab');if(t){const b=document.querySelector('#tabs button[data-tab="'+t+'"]');if(b)b.click()}}
 
 /* ---------- helpers ---------- */
@@ -222,8 +234,47 @@ function shipCell(t,td){const md=t.shipDate.slice(5).replace('-','/');
 const IC={
   pick:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M15 17.5l2 2 4-4"/></svg>',
   full:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>'};
+/* ---------- TV showcase mode (big screen, view-only) ---------- */
+S.tv=/[?&]tv=1/.test(location.search)||store.get('tsb_tv')==='1';
+function tvSet(on){S.tv=on;store.set('tsb_tv',on?'1':'0');document.body.classList.toggle('tv',on);
+  const d=document;try{if(on&&!d.fullscreenElement)d.documentElement.requestFullscreen();if(!on&&d.fullscreenElement)d.exitFullscreen()}catch(e){}
+  if(on&&S.tab!=='board'){const b=document.querySelector('#tabs button[data-tab="board"]');if(b)b.click()}TK='';render(true)}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&S.tv)tvSet(false)});
+function comb(done,total){const cols=total>24?10:total>12?8:6,w=total>24?46:total>12?58:72,h=Math.round(w*1.15),cells=[];
+  for(let i=0;i<total;i++){const r=Math.floor(i/cols),c=i%cols;cells.push('<i class="cell'+(i<done?' on':'')+(i===done-1?' last':'')+'" style="width:'+(w-4)+'px;height:'+(h-5)+'px;left:'+(c*w+(r%2?w/2:0))+'px;top:'+(r*h*0.76)+'px;--d:'+(i*0.03).toFixed(2)+'s"></i>')}
+  const rows=Math.ceil(total/cols);return '<div class="comb" style="width:'+(cols*w+w/2)+'px;height:'+((rows-1)*h*0.76+h)+'px">'+cells.join('')+'</div>'}
+function renderTV(){
+  document.body.classList.add('tv');
+  const v=$('#v-board'),list=boardTasks(),td=today(),now=new Date();
+  const doneToday=S.done.filter(t=>t.completedAt&&ymd(new Date(t.completedAt))===td);
+  const dueOpen=list.filter(t=>t.shipDate<=td||t.urgent).length,total=Math.max(1,doneToday.length+dueOpen);
+  const n=list[0],nx=list.slice(1,6);
+  const tag=t=>t.urgent?'<span class="tv-tag u">緊急單</span>':t.shipDate<td?'<span class="tv-tag o">逾期 '+t.shipDate.slice(5).replace('-','/')+'</span>':t.shipDate===td?'<span class="tv-tag t">今日出貨</span>':t.shipDate===addDays(td,1)?'<span class="tv-tag m">明日出貨</span>':'<span class="tv-tag">'+t.shipDate.slice(5).replace('-','/')+' 出貨</span>';
+  let h='<div class="tv-wrap"><header class="tv-top"><div class="tv-brand"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 2l15.6 9v18L20 38 4.4 29V11z" fill="#F2B33D"/><path d="M20 10.5l8.2 4.75v9.5L20 29.5l-8.2-4.75v-9.5z" fill="#0A110E"/><path d="M20 15.5l3.9 2.25v4.5L20 24.5l-3.9-2.25v-4.5z" fill="#FFD47E"/></svg><div><b>統香蜂蜜</b><span>生產中控室</span></div></div>'+
+    '<div class="tv-live"><i></i>即時連線</div><div class="tv-time"><div class="bd-clock" id="bdclock">'+clockHTML()+'</div><small>'+(now.getMonth()+1)+' 月 '+now.getDate()+' 日 週'+WD[now.getDay()]+'</small></div>'+
+    '<button type="button" id="tvexit" class="tv-exit">離開展示模式</button></header><section class="tv-main">';
+  if(n)h+='<div class="tv-now'+(n.urgent?' urgent':'')+'"><div class="tv-k"><span class="tv-dot"></span>現在生產'+tag(n)+'</div>'+
+    '<div class="tv-cust">'+esc(n.customer)+'</div><div class="tv-prod">'+esc(n.productName)+'</div>'+
+    '<div class="tv-qty"><b>'+num(n.qty)+'</b><span>'+esc(n.unit||'')+'</span></div>'+(n.note?'<div class="tv-note">備註：'+esc(n.note)+'</div>':'')+'</div>';
+  else h+='<div class="tv-now done"><div class="tv-k">今日排程</div><div class="tv-cust">全部完成</div><div class="tv-prod">辛苦了，今天的訂單都已生產完畢</div></div>';
+  h+='<aside class="tv-side"><div class="tv-panel"><div class="tv-k">今日進度</div><div class="tv-prog"><b><span data-count="tvdone">'+doneToday.length+'</span></b><span>／ '+total+' 筆</span></div>'+comb(doneToday.length,total)+'</div>'+
+    '<div class="tv-panel"><div class="tv-k">接下來</div>'+(nx.length?nx.map((t,i)=>'<div class="tv-row'+(t.urgent?' urgent':'')+'"><span class="tv-seq">'+pad(i+2)+'</span><div class="tv-rm"><b>'+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'</span></div><div class="tv-rq"><b>'+num(t.qty)+'</b><span>'+esc(t.unit||'')+'</span></div></div>').join(''):'<div class="tv-empty">沒有排隊中的訂單</div>')+
+    (list.length>6?'<div class="tv-more">還有 '+(list.length-6)+' 筆</div>':'')+'</div></aside></section></div>';
+  v.innerHTML=h;countUp();updateTicker(doneToday);
+}
+/* full-screen honey flood when an order is finished */
+const FLQ=[];let flBusy=false;
+function tvFlood(items){FLQ.push(...items);if(!flBusy)flNext()}
+function flNext(){const it=FLQ.shift();if(!it){flBusy=false;return}flBusy=true;
+  const el=document.createElement('div');el.className='flood';el.setAttribute('role','status');
+  el.innerHTML='<div class="fl-honey"><svg class="fl-wave" viewBox="0 0 1200 60" preserveAspectRatio="none" aria-hidden="true"><path d="M0 30 Q150 0 300 30 T600 30 T900 30 T1200 30 V60 H0Z"/></svg></div>'+
+    '<div class="fl-text"><div class="fl-k">完成生產</div><div class="fl-c">'+esc(it.customer)+'</div><div class="fl-p">'+esc(it.product)+'</div><div class="fl-l">'+esc(it.lot)+'</div></div>';
+  document.body.appendChild(el);Snd.play('done');setTimeout(()=>Voice.say(spokenName(it.customer)+'，已完成生產'),700);
+  setTimeout(()=>el.classList.add('out'),4200);setTimeout(()=>{el.remove();flNext()},5200)}
 function renderBoard(){
   if(dragging)return;
+  if(S.tv)return renderTV();
+  document.body.classList.remove('tv');
   const v=$('#v-board'),list=boardTasks(),td=today();
   const overL=list.filter(t=>t.shipDate<td),todayL=list.filter(t=>t.shipDate===td);
   const doneToday=S.done.filter(t=>t.completedAt&&ymd(new Date(t.completedAt))===td);
@@ -242,7 +293,7 @@ function renderBoard(){
     '</div></section>';
   h+='<div class="bd-head"><div><b>生產排程</b><span>依序生產，拖曳 ⠿ 可調整順序</span></div><div class="bd-act">'+
     (S.pick?'':'<button type="button" id="pickstart" class="pick-start">'+IC.pick+'多筆一起完成（同一鍋）</button>')+
-    '<button type="button" id="fullbtn" class="ghost-btn" aria-label="全螢幕顯示">'+IC.full+'<span>全螢幕</span></button></div></div>';
+    '<button type="button" id="tvbtn" class="ghost-btn tv-btn">'+IC.full+'<span>展示模式（電視）</span></button></div></div>';
   if(!list.length)h+='<div class="empty"><b>目前沒有待生產項目</b>三天內（含今日）要出貨的訂單會自動出現在這裡。到「訂單輸入」新增第一筆。</div>';
   else h+=(S.pick?'<div class="pickbar-top"><b>勾選這一鍋要分給哪幾張訂單</b><span>點卡片勾選，同一類別（品種）才能共用批號</span></div>':'')+
     '<div class="list'+(S.pick?' picking':'')+'" id="blist">'+list.map((t,i)=>{
@@ -273,6 +324,8 @@ function renderBoard(){
 $('#v-board').addEventListener('click',e=>{
   if(e.target.closest('#pickstart')){S.pick=new Set();Snd.play('tap');return renderBoard()}
   if(e.target.closest('#pickcancel')){S.pick=null;return renderBoard()}
+  if(e.target.closest('#tvbtn')){tvSet(true);return}
+  if(e.target.closest('#tvexit')){tvSet(false);return}
   if(e.target.closest('#fullbtn')){const d=document;try{if(d.fullscreenElement)d.exitFullscreen();else d.documentElement.requestFullscreen()}catch(_){}return}
   if(e.target.closest('#pickgo')){if(!S.pick.size)return toast('請先點選要一起完成的訂單');return openBatch([...S.pick])}
   const bl=e.target.closest('[data-blot]');if(bl){const t=S.done.find(x=>x.id===+bl.dataset.blot);if(t)openLotEdit(t);return}
