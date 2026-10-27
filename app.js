@@ -271,6 +271,128 @@ document.addEventListener('click',async e=>{
 });
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&S.planOpen)closePlan()});
 
+/* ---------- APS view: production calendar (Gantt), daily lists, late/overload, run log, parameters ---------- */
+S.apsDay=null;S.apsEdit=null;
+const LINE_COLORS=['#F2B33D','#86B6F2','#4FD08E','#C494FF','#FF8A7E','#7FDBFF'];
+function apsT(id){return S.open.find(t=>t.id===id)}
+function segTime(p,d){if(!p||!p.start)return '—';if(p.startDay===d&&p.day===d)return p.start+'–'+p.end;if(p.startDay===d)return p.start+' 開始';if(p.day===d)return '續～'+p.end;return '續做'}
+function etaTag(t){const p=S.aps&&S.aps.tasks&&S.aps.tasks[t.id];if(!p||!p.day||!p.line)return '';return '<span class="eta'+(p.late?' late':'')+'">'+(p.late?'⚠ 可能延誤・':'預計 ')+(p.day===today()?'':md(p.day)+' ')+(p.end||'')+' 完成</span>'}
+function wkName(d){return '週'+WD[new Date(d+'T00:00:00').getDay()]}
+function renderAps(){
+  const v=$('#v-aps');const A=S.aps;if(!v)return;
+  if(!A||A.error){v.innerHTML='<header class="pg-head"><h1>排程</h1><p>'+(A&&A.error?'計算失敗：'+esc(A.error):'載入中…')+'</p></header>';return}
+  if(S.apsEdit){return renderApsEdit()}
+  const td=today();if(!S.apsDay||!A.days.includes(S.apsDay))S.apsDay=td;
+  const T=A.tasks,late=A.late.map(apsT).filter(Boolean),locked=S.open.filter(t=>t.locked).length,held=S.open.filter(t=>t.holdUntil).length;
+  const mis=A.missing,noLines=!A.lines.length;
+  let h='<header class="pg-head aps-head"><div><h1>智慧排程</h1><p>依產線產能、出貨日倒推、待料與人工鎖定，自動算出每天每條線做什麼。訂單一變動就重算。</p></div><button type="button" class="ghost-btn" id="apsedit">⚙ 排程參數</button></header>';
+  h+='<div class="aps-kpi">'+
+    '<div class="ak '+(late.length?'bad':'ok')+'"><b>'+late.length+'</b><span>可能延誤</span></div>'+
+    '<div class="ak '+(A.overload.length?'warn':'ok')+'"><b>'+A.overload.length+'</b><span>滿載天次</span></div>'+
+    '<div class="ak"><b>'+locked+'</b><span>人工鎖定</span></div>'+
+    '<div class="ak"><b>'+held+'</b><span>待料</span></div>'+
+    '<div class="ak '+(S.plan&&S.plan.auto?'ok':'')+'"><b>'+(S.plan&&S.plan.auto?'開':'關')+'</b><span>自動排程</span></div></div>';
+  // missing data — never guessed
+  const miss=[];
+  if(noLines)miss.push('<b>還沒有設定產線／設備</b>：系統無法計算產能與時間。到「排程參數」新增產線（例：蜂蜜充填線、糖漿線），設定每天可用工時與負責的類別。');
+  if(mis.noLine.length)miss.push('<b>類別沒有指定產線</b>：'+mis.noLine.map(c=>esc(c+' '+catName(c))).join('、'));
+  if(mis.noRate.length)miss.push('<b>缺少產能速率</b>（每小時可做幾箱／桶／瓶）：'+mis.noRate.map(esc).join('、')+'。這些工作的時間先以 0 計算，標示「工時未知」。');
+  if(mis.noMethod)miss.push('<b>'+mis.noMethod+' 筆訂單沒選出貨方式</b>：無法套用各出貨方式的提前天數。');
+  if(mis.noAddr.length)miss.push('<b>公司配送客戶缺地址</b>：'+mis.noAddr.map(esc).join('、'));
+  miss.push('<b>系統目前沒有的資料</b>（排程不會自己編）：原物料庫存與到貨、成品庫存、人力班別、車輛載重／容積、客戶收貨時段、行車時間。缺料請用「待料」手動標示到料日。');
+  h+='<details class="aps-miss"'+(noLines||mis.noRate.length?' open':'')+'><summary>待補資料（'+miss.length+'）</summary><ul>'+miss.map(x=>'<li>'+x+'</li>').join('')+'</ul></details>';
+  // late orders with reasons and options
+  if(late.length)h+='<section class="aps-sec"><h2>可能延誤</h2><div class="aps-late">'+late.map(t=>{const p=T[t.id];return '<div class="al-card"><div class="alc-h"><b>'+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'　'+qtyU(t)+'</span></div>'+
+      '<div class="alc-d">最晚完成 <b>'+md(p.deadline)+'</b>　預計完成 <b class="bad">'+(p.day?md(p.day)+' '+(p.end||''):'排不進')+'</b></div>'+
+      '<div class="alc-why">原因：'+esc(p.why||'')+'</div>'+(p.options&&p.options.length?'<ul class="alc-opt">'+p.options.map(o=>'<li>'+esc(o)+'</li>').join('')+'</ul>':'')+apsActs(t)+'</div>'}).join('')+'</div></section>';
+  // gantt
+  const days=A.days.slice(0,7);
+  const rows=A.lines.map((l,li)=>{const col=LINE_COLORS[li%LINE_COLORS.length];
+    return '<div class="g-row"><div class="g-lane" style="--c:'+col+'"><b>'+esc(l.name)+'</b>'+(l.staff?'<small>'+l.staff+' 人</small>':'')+'</div>'+l.days.slice(0,7).map(d=>{
+      const its=d.items.map(apsT).filter(Boolean);
+      return '<div class="g-cell'+(d.work?'':' off')+(d.pct>=98?' full':'')+'" data-gday="'+d.date+'"><div class="g-load"><i style="width:'+Math.min(100,d.pct)+'%"></i><span>'+(d.work?(d.cap?d.pct+'%':'停機'):'休')+'</span></div>'+(d.note?'<div class="g-note">'+esc(d.note)+'</div>':'')+
+        its.slice(0,5).map(t=>{const p=T[t.id];return '<div class="g-blk'+(p.late?' late':'')+(t.locked?' lock':'')+(t.holdUntil?' hold':'')+'" style="--c:'+col+'" title="'+esc(t.customer+'｜'+t.productName)+'"><b>'+(t.locked?'🔒':'')+esc(t.customer)+'</b><span>'+num(t.qty)+esc(t.unit||'')+' · '+segTime(p,d.date)+'</span></div>'}).join('')+(its.length>5?'<div class="g-more">＋'+(its.length-5)+'</div>':'')+'</div>'}).join('')+'</div>'});
+  const unl=S.open.filter(t=>T[t.id]&&!T[t.id].line);
+  if(unl.length)rows.push('<div class="g-row"><div class="g-lane na"><b>未指定產線</b><small>無法算時間</small></div>'+days.map(d=>{const its=unl.filter(t=>T[t.id].day===d);return '<div class="g-cell na" data-gday="'+d+'">'+its.slice(0,4).map(t=>'<div class="g-blk na'+(T[t.id].late?' late':'')+'"><b>'+esc(t.customer)+'</b><span>'+num(t.qty)+esc(t.unit||'')+'</span></div>').join('')+(its.length>4?'<div class="g-more">＋'+(its.length-4)+'</div>':'')+'</div>'}).join('')+'</div>');
+  h+='<section class="aps-sec"><h2>生產日曆<span>點日期看當天清單；紅色＝可能延誤、🔒＝鎖定、斜線＝待料</span></h2><div class="gantt" style="--n:'+days.length+'"><div class="g-row g-hd"><div class="g-lane"></div>'+days.map(d=>'<button type="button" class="g-day'+(d===S.apsDay?' on':'')+(d===td?' td':'')+'" data-gday="'+d+'"><b>'+md(d)+'</b><small>'+(d===td?'今天':wkName(d))+'</small></button>').join('')+'</div>'+rows.join('')+'</div></section>';
+  // daily lists
+  const D=S.apsDay;
+  const prod=S.open.filter(t=>T[t.id]&&(T[t.id].day===D||T[t.id].startDay===D)).sort((a,b)=>String(T[a.id].line).localeCompare(String(T[b.id].line))||String(T[a.id].start||'').localeCompare(String(T[b.id].start||'')));
+  const ship=S.open.filter(t=>t.shipDate===D);
+  const byLine={};prod.forEach(t=>{const k=T[t.id].line||'_';(byLine[k]=byLine[k]||[]).push(t)});
+  h+='<section class="aps-sec"><h2>'+md(D)+' '+(D===td?'今天':wkName(D))+'　每日清單</h2><div class="aps-daily"><div class="ad-col"><h3>生產</h3>'+
+    (prod.length?Object.keys(byLine).map(k=>{const L=A.lines.find(l=>l.id===k);return '<div class="ad-line"><div class="ad-ln">'+esc(L?L.name:'未指定產線')+'</div>'+byLine[k].map(t=>{const p=T[t.id];
+      return '<div class="ad-row'+(p.late?' late':'')+'"><span class="ad-tm">'+segTime(p,D)+'</span><div class="ad-m"><b>'+(t.locked?'🔒 ':'')+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'</span><small>'+[p.minutes?'約 '+p.minutes+' 分鐘':'工時未知',p.changeover?'含換線 '+p.changeover+' 分':'',p.rateSrc||'',...(p.reasons||[]),...(p.flags||[]).filter(f=>f!=='工時未知')].filter(Boolean).map(esc).join('・')+'</small></div><span class="ad-q">'+qtyU(t)+'</span>'+apsActs(t)+'</div>'}).join('')+'</div>'}).join(''):'<p class="hint">這天沒有排生產。</p>')+
+    '</div><div class="ad-col"><h3>出貨／配送</h3>'+(ship.length?METHODS.concat(['']).map(m=>{const ts=ship.filter(t=>(t.shipMethod||'')===m);if(!ts.length)return '';
+      return '<div class="ad-line"><div class="ad-ln">'+(m?methodPill({shipMethod:m}):'<span class="pill p-tom">未選出貨方式</span>')+'</div>'+ts.map(t=>{const p=T[t.id];const ok=p&&p.day&&!p.late;return '<div class="ad-row"><div class="ad-m"><b>'+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'</span>'+(m==='公司配送'?'<small>'+esc(((S.customers.find(c=>c.name===t.customer)||{}).address)||'地址待確認')+'</small>':'')+'</div><span class="ad-q">'+qtyU(t)+'</span><span class="ad-st '+(ok?'ok':'bad')+'">'+(ok?'預計 '+md(p.day)+' 完成':'可能來不及')+'</span></div>'}).join('')+'</div>'}).join(''):'<p class="hint">這天沒有出貨。</p>')+
+    '<p class="hint">車輛載重、收貨時段、行車時間尚未建立，配送順序僅依地區分組，未驗證行車時間。</p></div></div></section>';
+  // run log
+  h+='<section class="aps-sec"><h2>重排紀錄<span>每次訂單或參數變動，系統重算並記錄前後差異</span></h2><div class="aps-runs">'+(S.runs&&S.runs.length?S.runs.map(r=>{const d=r.diff||{};
+    const parts=[];if(d.added&&d.added.length)parts.push('新增 '+d.added.length);if(d.removed&&d.removed.length)parts.push('移除 '+d.removed.length);if(d.moved&&d.moved.length)parts.push('改期 '+d.moved.length);if(d.newlyLate&&d.newlyLate.length)parts.push('<b class="bad">新延誤 '+d.newlyLate.length+'</b>');if(d.recovered&&d.recovered.length)parts.push('<b class="ok">恢復準時 '+d.recovered.length+'</b>');
+    return '<details class="run"><summary><span class="run-t">'+fmtTime(r.at)+'</span><b>'+esc(r.reason)+'</b><span class="run-p">'+(parts.join('・')||'無變化')+'</span>'+(r.undo?'<button type="button" class="run-undo" data-undo="'+r.id+'">還原這次之前的順序</button>':'')+'</summary>'+
+      ((d.moved||[]).length?'<div class="run-l"><i>改期</i>'+d.moved.slice(0,20).map(x=>'<div>'+esc(x.name)+'：'+esc(md(x.from))+' → '+esc(md(x.to))+'</div>').join('')+'</div>':'')+
+      ((d.newlyLate||[]).length?'<div class="run-l bad"><i>新延誤</i>'+d.newlyLate.map(x=>'<div>'+esc(x.name)+'</div>').join('')+'</div>':'')+
+      ((d.recovered||[]).length?'<div class="run-l ok"><i>恢復準時</i>'+d.recovered.map(x=>'<div>'+esc(x.name)+'</div>').join('')+'</div>':'')+'</details>'}).join(''):'<p class="hint">還沒有紀錄，下一次訂單變動後會開始記錄。</p>')+'</div></section>';
+  // learning
+  const L=A.learned||{},lk=Object.keys(L);
+  h+='<section class="aps-sec"><h2>實際工時學習<span>按卡片上的「開工」再按「完成生產」，系統就能算出實際速度</span></h2>'+(lk.length?'<div class="aps-learn">'+lk.map(c=>Object.keys(L[c]).map(u=>{const x=L[c][u],set=((A.aps.rates||{})[c]||{})[u];return '<div><b>'+esc(c+' '+catName(c))+'｜'+esc(u||'—')+'</b><span>實際 '+x.rate+' /小時（'+x.n+' 筆，可信度'+x.conf+'）</span><small>設定值 '+(set||'未設')+(A.aps.autoLearn&&x.n>=5?'・已自動採用實際值':x.n<5?'・樣本不足，維持設定值':'・未開啟自動校正')+'</small></div>'}).join('')).join('')+'</div>':'<p class="hint">目前沒有開工紀錄，還無法學習。樣本達 5 筆以上才會採用。</p>')+'</section>';
+  v.innerHTML=h;
+}
+function apsActs(t){return '<span class="aps-acts"><button type="button" data-alock="'+t.id+'" aria-pressed="'+!!t.locked+'">'+(t.locked?'🔒 解鎖':'鎖定')+'</button>'+
+  '<button type="button" data-ahold="'+t.id+'"'+(t.holdUntil?' aria-pressed="true"':'')+'>'+(t.holdUntil?'待料 '+md(t.holdUntil):'待料')+'</button>'+
+  '<button type="button" data-astart="'+t.id+'"'+(t.startedAt?' aria-pressed="true"':'')+'>'+(t.startedAt?'已開工':'開工')+'</button></span>'}
+function renderApsEdit(){
+  const v=$('#v-aps'),E=S.apsEdit,c=cfg();
+  const catKeys=Object.keys(c.cats);
+  let h='<header class="pg-head aps-head"><div><h1>排程參數</h1><p>只填你確定的數字；沒填的地方排程會標示「待補」，不會自己猜。</p></div></header>';
+  h+='<section class="aps-sec"><h2>產線／設備</h2><div class="pe-lines">'+E.lines.map((l,i)=>'<div class="pe-line" data-li="'+i+'"><div class="pe-g"><label>名稱<input data-lf="name" value="'+esc(l.name)+'"></label><label>每天可用工時（分鐘）<input data-lf="minutes" type="number" min="0" value="'+esc(l.minutes)+'"></label><label>開工時間<input data-lf="start" type="time" value="'+esc(l.start)+'"></label><label>換線清洗（分鐘）<input data-lf="changeover" type="number" min="0" value="'+esc(l.changeover)+'"></label><label>人力（人）<input data-lf="staff" type="number" min="0" value="'+esc(l.staff||0)+'"></label></div>'+
+    '<div class="pe-cats"><span>負責類別</span>'+catKeys.map(k=>'<button type="button" class="chip" data-lcat="'+k+'" aria-pressed="'+l.cats.includes(k)+'">'+esc(k+' '+c.cats[k].name)+'</button>').join('')+'</div><button type="button" class="danger pe-del" data-ldel="'+i+'">刪除產線</button></div>').join('')+
+    '<button type="button" id="pe-addline">＋ 新增產線</button></div></section>';
+  h+='<section class="aps-sec"><h2>產能速率<span>每小時可以完成多少（依類別與單位）</span></h2><div class="pe-rates"><div class="pr-h"><span>類別</span>'+UNITS.map(u=>'<span>'+u+'／小時</span>').join('')+'</div>'+catKeys.map(k=>'<div class="pr-r"><b>'+esc(k+' '+c.cats[k].name)+'</b>'+UNITS.map(u=>'<input type="number" min="0" step="0.5" data-rate="'+k+'|'+u+'" value="'+esc(((E.rates[k]||{})[u])||'')+'" placeholder="未設">').join('')+'</div>').join('')+'</div>'+
+    '<button type="button" class="ai-auto pe-learn" id="pe-learn" aria-pressed="'+!!E.autoLearn+'"><span class="ai-sw" aria-hidden="true"><i></i></span><span><b>自動校正（實際工時學習）</b><small>同類別同單位有 5 筆以上「開工→完成」紀錄時，改用實際速度；不足時維持上面的設定值。</small></span></button></section>';
+  h+='<section class="aps-sec"><h2>工作日與假日</h2><div class="chips">'+[1,2,3,4,5,6,0].map(d=>'<button type="button" class="chip" data-wd="'+d+'" aria-pressed="'+E.workdays.includes(d)+'">週'+WD[d]+'</button>').join('')+'</div>'+
+    '<label class="f">休假日（多個用逗號分開，例：2026-10-31, 2026-11-01）<input id="pe-hol" value="'+esc(E.holidays.join(', '))+'"></label></section>';
+  h+='<section class="aps-sec"><h2>產能異動<span>設備故障、保養、加班、半天班</span></h2><div class="pe-down">'+E.down.map((d,i)=>'<div class="pd-r" data-di="'+i+'"><select data-df="line">'+E.lines.map(l=>'<option value="'+esc(l.id)+'"'+(l.id===d.line?' selected':'')+'>'+esc(l.name)+'</option>').join('')+'</select><input type="date" data-df="date" value="'+esc(d.date)+'"><label>當天可用<input type="number" min="0" data-df="minutes" value="'+esc(d.minutes)+'">分鐘</label><input data-df="reason" placeholder="原因（故障、加班…）" value="'+esc(d.reason||'')+'"><button type="button" class="danger" data-ddel="'+i+'">✕</button></div>').join('')+
+    (E.lines.length?'<button type="button" id="pe-adddown">＋ 新增異動</button>':'<p class="hint">先新增產線。</p>')+'</div></section>';
+  h+='<section class="aps-sec"><h2>出貨前需完成天數<span>含品管、包裝、出貨準備；0＝出貨當天完成即可</span></h2><div class="pe-lead">'+METHODS.map(m=>'<label>'+esc(m)+'<input type="number" min="0" max="10" data-lead="'+m+'" value="'+esc(E.lead[m]||0)+'">天</label>').join('')+'</div>'+
+    '<label class="f" style="max-width:260px">排程顯示天數<input type="number" min="7" max="30" id="pe-hz" value="'+esc(E.horizon)+'"></label></section>';
+  h+='<div class="err" id="pe-err"></div><div class="row pe-bar"><button type="button" id="pe-cancel">取消</button><button type="button" class="primary" id="pe-save">儲存並重新排程</button></div>';
+  v.innerHTML=h;
+}
+function apsEditStart(){const a=JSON.parse(JSON.stringify((S.aps&&S.aps.aps)||{}));S.apsEdit={lines:a.lines||[],rates:a.rates||{},workdays:a.workdays||[1,2,3,4,5],holidays:a.holidays||[],down:a.down||[],lead:a.lead||{},horizon:a.horizon||14,autoLearn:!!a.autoLearn};renderAps()}
+document.addEventListener('click',async e=>{
+  const b=e.target.closest('button');if(!b||!b.closest('#v-aps,#v-board'))return;
+  if(b.id==='apsedit'){return apsEditStart()}
+  if(b.dataset.gday){S.apsDay=b.dataset.gday;return renderAps()}
+  if(b.dataset.alock){const id=+b.dataset.alock,t=apsT(id);return act(()=>api('POST','/api/tasks/'+id+'/lock',{on:!(t&&t.locked)}),t&&t.locked?'已解鎖':'已鎖定：自動排程不會移動這張')}
+  if(b.dataset.astart){const id=+b.dataset.astart,t=apsT(id);return act(()=>api('POST','/api/tasks/'+id+'/start',{on:!(t&&t.startedAt)}),t&&t.startedAt?'已取消開工':'已開工，開始計時')}
+  if(b.dataset.ahold){const id=+b.dataset.ahold,t=apsT(id);if(t&&t.holdUntil)return act(()=>api('POST','/api/tasks/'+id+'/hold',{until:null}),'已解除待料');return openHold(t)}
+  if(b.dataset.undo){if(b.dataset.armed!=='1'){b.dataset.armed='1';b.textContent='再按一次確認還原';return}return act(()=>api('POST','/api/plan/undo/'+b.dataset.undo),'已還原順序，自動排程已暫停')}
+  const E=S.apsEdit;if(!E)return;
+  if(b.id==='pe-cancel'){S.apsEdit=null;return renderAps()}
+  if(b.id==='pe-addline'){E.lines.push({id:'L'+Date.now().toString(36),name:'產線 '+(E.lines.length+1),minutes:480,start:'08:00',changeover:30,staff:0,cats:[]});return renderApsEdit()}
+  if(b.dataset.ldel){E.lines.splice(+b.dataset.ldel,1);return renderApsEdit()}
+  if(b.dataset.lcat){const i=+b.closest('[data-li]').dataset.li,k=b.dataset.lcat;E.lines.forEach((l,j)=>{if(j!==i)l.cats=l.cats.filter(x=>x!==k)});const L=E.lines[i];L.cats=L.cats.includes(k)?L.cats.filter(x=>x!==k):L.cats.concat(k);return renderApsEdit()}
+  if(b.dataset.wd){const d=+b.dataset.wd;E.workdays=E.workdays.includes(d)?E.workdays.filter(x=>x!==d):E.workdays.concat(d);return renderApsEdit()}
+  if(b.id==='pe-learn'){E.autoLearn=!E.autoLearn;return renderApsEdit()}
+  if(b.id==='pe-adddown'){E.down.push({line:E.lines[0].id,date:today(),minutes:0,reason:''});return renderApsEdit()}
+  if(b.dataset.ddel){E.down.splice(+b.dataset.ddel,1);return renderApsEdit()}
+  if(b.id==='pe-save'){E.holidays=($('#pe-hol').value||'').split(/[,，\s]+/).filter(x=>/^\d{4}-\d{2}-\d{2}$/.test(x));E.horizon=+$('#pe-hz').value||14;
+    const bad=E.lines.find(l=>!l.name.trim()||!(+l.minutes>=0));if(bad)return $('#pe-err').textContent='每條產線都要有名稱與工時';
+    const r=await act(()=>api('PUT','/api/aps',E),'排程參數已儲存，已重新計算');if(r){S.apsEdit=null;renderAps()}}
+});
+document.addEventListener('input',e=>{const E=S.apsEdit,t=e.target;if(!E||!t.closest('#v-aps'))return;
+  if(t.dataset.lf){const L=E.lines[+t.closest('[data-li]').dataset.li];L[t.dataset.lf]=t.type==='number'?+t.value:t.value}
+  else if(t.dataset.rate){const [c,u]=t.dataset.rate.split('|');(E.rates[c]=E.rates[c]||{})[u]=t.value===''?'':+t.value}
+  else if(t.dataset.df){const D=E.down[+t.closest('[data-di]').dataset.di];D[t.dataset.df]=t.dataset.df==='minutes'?+t.value:t.value}
+  else if(t.dataset.lead){E.lead[t.dataset.lead]=+t.value}});
+document.addEventListener('change',e=>{const E=S.apsEdit,t=e.target;if(!E||!t.closest('#v-aps'))return;if(t.dataset.df==='line'){E.down[+t.closest('[data-di]').dataset.di].line=t.value}});
+function openHold(t){if(!t)return;
+  $('#modal').innerHTML='<div class="scrim" id="hscrim"><form class="sheet" id="hform" style="max-width:480px"><div class="pname">標示待料／缺料</div><p class="hint">'+esc(t.customer)+'｜'+esc(t.productName)+'。排程會把這張排到到料日之後，若晚於最晚完成日會標示延誤。</p>'+
+    '<label class="f">預計到料日<input type="date" id="hdate" value="'+esc(addDays(today(),1))+'" required></label><label class="f">缺什麼（選填）<input id="hreason" placeholder="例：果糖、700g 玻璃瓶"></label><div class="row"><button type="button" id="hcancel" style="flex:1">取消</button><button class="primary" style="flex:2">確定</button></div></form></div>';
+  $('#hcancel').onclick=()=>{$('#modal').innerHTML=''};$('#hscrim').onclick=e=>{if(e.target.id==='hscrim')$('#modal').innerHTML=''};
+  $('#hform').onsubmit=async e=>{e.preventDefault();const r=await act(()=>api('POST','/api/tasks/'+t.id+'/hold',{until:$('#hdate').value,reason:$('#hreason').value}),'已標示待料，排程已重算');if(r)$('#modal').innerHTML=''}}
+
 /* ---------- completion feedback: Japanese variety-show style (集中線 + 大字砸下 + 字幕條 + 太鼓) ---------- */
 function varietySfx(){if(!Snd.on)return;Snd.unlock();const c=Snd.ctx;if(!c)return;try{
   const t0=c.currentTime+.02,out=c.createGain();out.gain.value=.9;out.connect(c.destination);
@@ -345,7 +467,7 @@ async function refresh(force){
     if(!force){const {rev}=await api('GET','/api/rev');if(rev===S.rev)return}
     const s=await api('GET','/api/state');
     detectRemoteDone(s.done);detectOrders(s.open,s.done);
-    S.rev=s.rev;S.open=s.open;setTimeout(()=>{checkUrgent();checkInbox()},0);S.done=s.done;S.products=s.products;S.recentLots=s.recentLots||{};S.customers=s.customers||[];S.history=s.history||[];S.cfg=s.config;S.plan=s.plan||null;if(S.planOpen)renderPlan();
+    S.rev=s.rev;S.open=s.open;setTimeout(()=>{checkUrgent();checkInbox()},0);S.done=s.done;S.products=s.products;S.recentLots=s.recentLots||{};S.customers=s.customers||[];S.history=s.history||[];S.cfg=s.config;S.plan=s.plan||null;S.aps=s.aps||null;S.runs=s.runs||[];if(S.planOpen)renderPlan();
     setStatus('已連線，資料每 3 秒自動同步');
     if(!F)render();
   }catch(e){if(e.message!=='需要密碼')setStatus('連線中斷，正在重新連線…')}
@@ -366,7 +488,7 @@ function showPin(){
 /* ---------- tabs ---------- */
 $('#tabs').addEventListener('click',e=>{const b=e.target.closest('button[data-tab]');if(!b)return;S.tab=b.dataset.tab;
   document.querySelectorAll('#tabs button').forEach(x=>x.setAttribute('aria-selected',x===b?'true':'false'));
-  ['board','orders','records','settings'].forEach(k=>$('#v-'+k).hidden=k!==S.tab);document.body.classList.toggle('bd',S.tab==='board');render(true);checkUrgent();checkInbox();store.set('tsb_tab',S.tab)});
+  ['board','orders','records','aps','settings'].forEach(k=>$('#v-'+k).hidden=k!==S.tab);document.body.classList.toggle('bd',S.tab==='board');render(true);checkUrgent();checkInbox();store.set('tsb_tab',S.tab)});
 document.body.classList.add('bd');if(S.tv)document.body.classList.add('tv');
 {const t=store.get('tsb_tab');if(t){const b=document.querySelector('#tabs button[data-tab="'+t+'"]');if(b)b.click()}}
 
@@ -385,11 +507,12 @@ function varName(c,v){return ((cfg().varieties||{})[c]||{})[v]||''}
 /* ---------- render ---------- */
 function render(force){
   const a=document.activeElement;
-  if(!force&&a&&(a.tagName==='INPUT'||a.tagName==='SELECT')&&a.closest('#v-orders,#v-settings,#v-records'))return;
+  if(!force&&a&&(a.tagName==='INPUT'||a.tagName==='SELECT')&&a.closest('#v-orders,#v-settings,#v-records,#v-aps'))return;
   if(S.tab==='board')renderBoard();
   if(S.tab==='orders')renderOrders();
   if(S.tab==='records')renderRecords();
   if(S.tab==='settings')renderSettings();
+  if(S.tab==='aps')renderAps();
 }
 let dragging=false;
 function unitSum(ts){const m={};ts.forEach(t=>{const u=t.unit||'件';m[u]=(m[u]||0)+(+t.qty||0)});const k=Object.keys(m);return k.length?k.map(u=>num(m[u])+' '+u).join('　'):'—'}
@@ -473,7 +596,7 @@ function renderBoard(){
       '<div class="c-top">'+(S.pick?'<span class="pickbox'+(on?' on':'')+'" aria-hidden="true">'+(on?'✓':'')+'</span>':'<span class="grip" aria-label="拖曳排序" title="拖曳排序">⠿</span><span class="seq">'+pad(i+1)+'</span>')+
         (t.urgent?'<span class="urg-tag">緊急單</span>':'')+(next&&!t.urgent?'<span class="next-tag">現在生產</span>':'')+flagTag(t)+shipCell(t,td)+'</div>'+
       '<div class="cust">'+esc(t.customer)+'</div><div class="pname">'+esc(t.productName)+'</div>'+
-      '<div class="meta">'+methodPill(t)+code+(t.parentId?'<span class="pill p-later">續做</span>':'')+'</div>'+
+      '<div class="meta">'+methodPill(t)+code+(t.parentId?'<span class="pill p-later">續做</span>':'')+(t.locked?'<span class="lock-tag">🔒 鎖定</span>':'')+(t.holdUntil?'<span class="hold-tag">待料 '+md(t.holdUntil)+'</span>':'')+etaTag(t)+'</div>'+
       (t.note?'<div class="note-box">備註：'+esc(t.note)+'</div>':'')+
       '<div class="c-bot"><div class="c-qty"><b>'+num(t.qty)+'</b><span>'+esc(t.unit||'')+'</span></div>'+
       (S.pick?'':'<button class="done-btn" data-act="finish" data-id="'+t.id+'">完成生產</button>')+'</div></div>'}).join('')+'</div>'+

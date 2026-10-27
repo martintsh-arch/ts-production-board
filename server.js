@@ -1,7 +1,9 @@
 'use strict';
 const path = require('path');
 const express = require('express');
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+types.setTypeParser(1082, (v) => v); // DATE columns stay 'YYYY-MM-DD' strings
+const APS = require('./aps');
 
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -103,6 +105,17 @@ async function migrate() {
     );
     ALTER TABLE customers ADD COLUMN IF NOT EXISTS address TEXT NOT NULL DEFAULT '';
     ALTER TABLE products ADD COLUMN IF NOT EXISTS no_lot BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS hold_until DATE;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS hold_reason TEXT NOT NULL DEFAULT '';
+    CREATE TABLE IF NOT EXISTS plan_runs (
+      id SERIAL PRIMARY KEY,
+      at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      reason TEXT NOT NULL DEFAULT '',
+      summary JSONB NOT NULL DEFAULT '{}'
+    );
+    CREATE TABLE IF NOT EXISTS aps_snap (id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1), data JSONB NOT NULL);
     CREATE TABLE IF NOT EXISTS customer_products (
       customer TEXT NOT NULL,
       product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -173,6 +186,7 @@ function rowTask(r) {
     completedAt: r.completed_at, operator: r.operator, matDate: r.mat_date, matArr: r.mat_arr,
     unit: r.unit || '', contents: r.contents || null, parentId: r.parent_id, lotHistory: r.lot_history, createdAt: r.created_at,
     urgent: !!r.urgent, urgentAt: r.urgent_at, shipMethod: r.ship_method || '',
+    locked: !!r.locked, startedAt: r.started_at || null, holdUntil: r.hold_until || null, holdReason: r.hold_reason || '',
   };
 }
 async function getConfig(client) {
@@ -237,6 +251,8 @@ app.get('/api/state', wrap(async (req, res) => {
     config,
     now: taipeiParts(),
     plan: smartPlan(open.rows, customers.rows, config),
+    aps: await computeAps(null, [open.rows, done.rows.filter((t) => t.started_at), customers.rows, config]).catch((e) => ({ error: e.message })),
+    runs: (await pool.query(`SELECT id, at, reason, summary FROM plan_runs ORDER BY id DESC LIMIT 30`)).rows.map((r) => ({ id: r.id, at: r.at, reason: r.reason, diff: r.summary.diff, late: r.summary.late, overload: r.summary.overload, undo: !!r.summary.undo })),
   });
 }));
 
@@ -279,9 +295,10 @@ function smartPlan(open, customers, cfg) {
     c.tasks.sort((a, b) => seen.indexOf(a.product_id) - seen.indexOf(b.product_id));
   });
   clusters.sort((a, b) => a.anchor.localeCompare(b.anchor) || (b.over - a.over) || a.mrank - b.mrank || a.cat.localeCompare(b.cat) || a.variety.localeCompare(b.variety) || b.tasks.length - a.tasks.length);
-  const order = urgent.map((t) => t.id).concat(...clusters.map((c) => c.tasks.map((t) => t.id)));
   const current = open.filter((t) => !t.urgent).slice().sort((a, b) => a.sort_order - b.sort_order || a.id - b.id).map((t) => t.id);
-  const planRest = order.slice(urgent.length);
+  const fixed = new Set(open.filter((t) => !t.urgent && (t.locked || t.started_at)).map((t) => t.id));
+  const planRest = APS.mergeLocked(current, [].concat(...clusters.map((c) => c.tasks.map((t) => t.id))), fixed);
+  const order = urgent.map((t) => t.id).concat(planRest);
   const moved = planRest.filter((id, i) => current[i] !== id).length;
 
   const sumUnits = (ts) => { const u = {}; ts.forEach((t) => { u[t.unit || ''] = (u[t.unit || ''] || 0) + t.qty; }); return Object.entries(u).map(([k, v]) => v + (k ? ' ' + k : '')).join('＋'); };
@@ -332,6 +349,7 @@ async function applyPlan(client) {
   const [{ rows: open }, { rows: customers }, cfg] = await Promise.all([
     db.query(`SELECT * FROM tasks WHERE status='open'`), db.query(`SELECT name, address FROM customers`), getConfig(client)]);
   const p = smartPlan(open, customers, cfg);
+  pendingUndo = open.map((t) => [t.id, t.sort_order]);
   for (let i = 0; i < p.order.length; i++) await db.query(`UPDATE tasks SET sort_order=$1 WHERE id=$2 AND status='open'`, [(i + 1) * 10, p.order[i]]);
   return p;
 }
@@ -342,6 +360,63 @@ async function saveAddress(customer, address) {
   address = str(address, 200);
   if (!customer || !address) return;
   await pool.query(`INSERT INTO customers (name, address) VALUES ($1,$2) ON CONFLICT (name) DO UPDATE SET address=EXCLUDED.address`, [customer, address]);
+}
+
+/* ---------- APS: finite-capacity schedule, run log, undo ---------- */
+let pendingUndo = null;
+function nowMinTW() { const f = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()); const [h, m] = f.split(':'); return (+h % 24) * 60 + +m; }
+async function computeAps(db, given) {
+  db = db || pool;
+  const [open, done, customers, cfg] = given || await Promise.all([
+    db.query(`SELECT * FROM tasks WHERE status='open' ORDER BY urgent DESC, urgent_at, sort_order, id`).then((r) => r.rows),
+    db.query(`SELECT cat, unit, qty, started_at, completed_at FROM tasks WHERE status='done' AND started_at IS NOT NULL ORDER BY completed_at DESC LIMIT 1000`).then((r) => r.rows),
+    db.query(`SELECT name, address FROM customers`).then((r) => r.rows),
+    getConfig(),
+  ]);
+  const tp = taipeiParts();
+  const learned = APS.learnRates(done);
+  const addr = {}; customers.forEach((c) => { addr[c.name] = c.address || ''; });
+  const sch = APS.schedule(open, { aps: cfg.aps, today: tp.y + '-' + tp.m + '-' + tp.d, nowMin: nowMinTW(), customers: addr, learned });
+  sch.learned = learned;
+  return sch;
+}
+const RUN_LABEL = [
+  [/^\/tasks\/batch$/, '新增訂單'], [/^\/tasks\/\d+$/, '修改訂單'], [/\/void$/, '取消訂單'], [/\/urgent$/, '緊急插單'],
+  [/finish/, '完成生產'], [/^\/tasks\/reorder$/, '手動調整順序'], [/^\/plan\/apply$/, '套用智慧排程'], [/^\/plan\/auto$/, '切換自動排程'],
+  [/^\/plan\/undo/, '還原排程'], [/\/lock$/, '人工鎖定'], [/\/hold$/, '待料／缺料'], [/\/start$/, '開工'], [/^\/aps$/, '修改排程參數'],
+];
+let runTimer = null, runReasons = [];
+app.use('/api', (req, res, next) => {
+  if (req.method === 'GET' || /lot-preview|import-history/.test(req.path)) return next();
+  const p = req.path;
+  res.on('finish', () => {
+    if (res.statusCode >= 400) return;
+    const hit = RUN_LABEL.find(([re]) => re.test(p));
+    if (!hit) return;
+    runReasons.push(p === '/tasks/batch' && req.body && req.body.urgent === true ? '緊急插單' : hit[1]);
+    clearTimeout(runTimer);
+    runTimer = setTimeout(() => recordRun().catch((e) => console.error('recordRun', e.message)), 400);
+  });
+  next();
+});
+async function recordRun() {
+  const reasons = [...new Set(runReasons)]; runReasons = [];
+  const undo = pendingUndo; pendingUndo = null;
+  const sch = await computeAps();
+  const { rows: sn } = await pool.query('SELECT data FROM aps_snap WHERE id=1');
+  const prev = sn[0] ? sn[0].data : {};
+  const cur = {};
+  Object.values(sch.tasks).forEach((p) => { cur[p.id] = { id: p.id, day: p.day || null, start: p.start || null, startDay: p.startDay || null, line: p.line || null, late: !!p.late }; });
+  const { rows: names } = await pool.query(`SELECT id, customer, product_name FROM tasks WHERE id = ANY($1::int[])`, [[...new Set(Object.keys(cur).concat(Object.keys(prev)).map(Number))]]);
+  const nm = {}; names.forEach((r) => { nm[r.id] = r.customer + '｜' + r.product_name; });
+  const diff = APS.diffPlans(prev, cur, nm);
+  const changed = diff.moved.length || diff.newlyLate.length || diff.recovered.length || diff.added.length || diff.removed.length || undo;
+  await pool.query(`INSERT INTO aps_snap (id, data) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data`, [JSON.stringify(cur)]);
+  if (!changed) return;
+  const summary = { diff, late: sch.late.length, overload: sch.overload.length, undo: undo || undefined };
+  await pool.query(`INSERT INTO plan_runs (reason, summary) VALUES ($1, $2)`, [reasons.join('、') || '重新計算', JSON.stringify(summary)]);
+  await pool.query(`DELETE FROM plan_runs WHERE id < (SELECT COALESCE(MAX(id),0) - 200 FROM plan_runs)`);
+  await bump();
 }
 
 /* orders */
@@ -502,6 +577,55 @@ async function nextSeq(client, prefix) {
   return max + 1;
 }
 
+app.post('/api/tasks/:id/lock', wrap(async (req, res) => {
+  const on = !!(req.body && req.body.on);
+  const { rowCount } = await pool.query(`UPDATE tasks SET locked=$1 WHERE id=$2 AND status='open'`, [on, req.params.id]);
+  if (!rowCount) throw new UserError('這筆已完成或取消');
+  await bump();
+  res.json({ ok: true, on });
+}));
+app.post('/api/tasks/:id/hold', wrap(async (req, res) => {
+  const b = req.body || {};
+  const until = b.until ? str(b.until, 10) : null;
+  if (until && !isDate(until)) throw new UserError('請選擇預計到料日');
+  const { rowCount } = await pool.query(`UPDATE tasks SET hold_until=$1, hold_reason=$2 WHERE id=$3 AND status='open'`, [until, until ? str(b.reason, 60) : '', req.params.id]);
+  if (!rowCount) throw new UserError('這筆已完成或取消');
+  await bump();
+  res.json({ ok: true });
+}));
+app.post('/api/tasks/:id/start', wrap(async (req, res) => {
+  const on = !(req.body && req.body.on === false);
+  const { rowCount } = await pool.query(`UPDATE tasks SET started_at=$1 WHERE id=$2 AND status='open'`, [on ? new Date() : null, req.params.id]);
+  if (!rowCount) throw new UserError('這筆已完成或取消');
+  await bump();
+  res.json({ ok: true, on });
+}));
+app.put('/api/aps', wrap(async (req, res) => {
+  const a = APS.normAps(req.body || {});
+  a.rates = {}; Object.entries((req.body || {}).rates || {}).forEach(([c, u]) => { if (!/^[A-Z]$/.test(c)) return; APS.UNITS.forEach((k) => { const v = +((u || {})[k]); if (v > 0) (a.rates[c] = a.rates[c] || {})[k] = Math.round(v * 10) / 10; }); });
+  a.holidays = a.holidays.filter(isDate);
+  a.down = a.down.filter((d) => d && isDate(d.date) && a.lines.some((l) => l.id === d.line)).map((d) => ({ line: d.line, date: d.date, minutes: Math.max(0, +d.minutes || 0), reason: str(d.reason, 40) }));
+  Object.keys(a.lead).forEach((k) => { a.lead[k] = Math.max(0, Math.min(10, parseInt(a.lead[k], 10) || 0)); });
+  a.horizon = Math.max(7, Math.min(30, parseInt(a.horizon, 10) || 14));
+  a.autoLearn = !!a.autoLearn;
+  await pool.query(`UPDATE config SET data = jsonb_set(data, '{aps}', $1::jsonb) WHERE id=1`, [JSON.stringify(a)]);
+  await bump();
+  res.json({ ok: true });
+}));
+app.post('/api/plan/undo/:id', wrap(async (req, res) => {
+  const { rows } = await pool.query('SELECT summary FROM plan_runs WHERE id=$1', [req.params.id]);
+  const undo = rows[0] && rows[0].summary.undo;
+  if (!undo) throw new UserError('這次重排沒有可以還原的順序');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const [id, so] of undo) await client.query(`UPDATE tasks SET sort_order=$1 WHERE id=$2 AND status='open'`, [so, id]);
+    await client.query(`UPDATE config SET data = jsonb_set(data, '{autoPlan}', 'false'::jsonb) WHERE id=1`);
+    await bump(client);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+  res.json({ ok: true });
+}));
 app.post('/api/plan/apply', wrap(async (req, res) => {
   const client = await pool.connect();
   let p;
