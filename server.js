@@ -372,7 +372,20 @@ function smartPlan(open, customers, cfg) {
       const x = known.splice(bi, 1)[0]; x.km = Math.round(bd * 10) / 10; total += bd; cur = x.at; ordered.push(x);
     }
     rest2.sort((a, b) => (a.region === '未填地址') - (b.region === '未填地址') || a.region.localeCompare(b.region, 'zh-Hant'));
-    return { date: d, stops: ordered.concat(rest2).map((x) => ({ region: x.region, customers: x.customers, orders: x.orders, km: x.km })), km: Math.round(total) };
+    // exact drop-off sequence for the map: inside each stop, nearest customer first, continuing from the previous point
+    const points = []; let from = [depot.lat, depot.lng], pathKm = 0;
+    ordered.forEach((x, si) => {
+      const rem = x.customers.filter((n) => geo[n]).map((n) => ({ name: n, lat: geo[n][0], lng: geo[n][1] }));
+      while (rem.length) {
+        let bi = 0, bd = Infinity;
+        rem.forEach((q, i) => { const dd = kmBetween(from, [q.lat, q.lng]); if (dd < bd) { bd = dd; bi = i; } });
+        const q = rem.splice(bi, 1)[0]; pathKm += bd; from = [q.lat, q.lng];
+        points.push({ stop: si + 1, name: q.name, lat: q.lat, lng: q.lng, legKm: Math.round(bd * 10) / 10 });
+      }
+    });
+    const backKm = points.length ? Math.round(kmBetween(from, [depot.lat, depot.lng]) * 10) / 10 : 0;
+    return { date: d, stops: ordered.concat(rest2).map((x) => ({ region: x.region, customers: x.customers, orders: x.orders, km: x.km })), km: Math.round(total),
+      points, backKm, pathKm: Math.round((pathKm + backKm) * 10) / 10, depot: { name: depot.name, lat: depot.lat, lng: depot.lng } };
   });
   // far own-truck customers → suggest logistics instead
   const far = [...new Set(own.map((t) => t.customer))].filter((n) => geo[n] && kmBetween([depot.lat, depot.lng], geo[n]) > FAR_KM)
