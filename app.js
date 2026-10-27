@@ -74,13 +74,19 @@ function alarmOn(pend){
   if(AL&&AL.sig===sig)return;
   const fresh=!AL;AL=Object.assign(AL||{},{pend,sig});
   let box=$('#alarm');if(!box){box=document.createElement('div');box.id='alarm';box.setAttribute('role','alertdialog');box.setAttribute('aria-label','緊急單');document.body.appendChild(box)}
-  box.innerHTML='<div class="al-box"><div class="al-ic" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M32 6l26 46H6z" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/><path d="M32 24v14" stroke="currentColor" stroke-width="5" stroke-linecap="round"/><circle cx="32" cy="45" r="3.2" fill="currentColor"/></svg></div>'+
+  const tape='<div>'+Array(14).fill('<span>緊急單</span><span>優先生產</span>').join('')+'</div>';
+  if(fresh)AL.since=Date.now();
+  box.innerHTML='<div class="al-beams" aria-hidden="true"><i></i><i></i></div><div class="al-strobe" aria-hidden="true"></div>'+
+    '<div class="al-tape top" aria-hidden="true">'+tape+'</div><div class="al-tape bot" aria-hidden="true">'+tape+'</div>'+
+    '<div class="al-box'+(fresh?' shake':'')+'"><div class="al-top"><div class="al-beacon" aria-hidden="true"><span></span></div>'+
+    '<div class="al-timer"><small>警報已響</small><b id="altime">'+alarmClock()+'</b></div><div class="al-beacon" aria-hidden="true"><span></span></div></div>'+
     '<div class="al-k">緊急單</div><div class="al-sub">請先暫停手上的工作，優先生產以下訂單</div><div class="al-list">'+
     pend.map(t=>'<div class="al-row"><b>'+esc(t.customer)+'</b><span>'+esc(t.productName)+'</span><em>'+num(t.qty)+(t.unit?' '+esc(t.unit):'')+'</em></div>').join('')+
     '</div><button type="button" id="alack" class="al-btn">收到，馬上生產</button></div>';
-  if(fresh){if(navigator.vibrate)try{navigator.vibrate([400,200,400,200,800])}catch(e){}alarmCycle()}
+  if(fresh){AL.tick=setInterval(()=>{const e=$('#altime');if(e)e.textContent=alarmClock()},1000);if(navigator.vibrate)try{navigator.vibrate([400,200,400,200,800])}catch(e){}alarmCycle()}
 }
-function alarmOff(){if(!AL)return;clearTimeout(AL.t1);clearTimeout(AL.t2);AL=null;Siren.stop();try{speechSynthesis.cancel()}catch(e){}const b=$('#alarm');if(b)b.remove()}
+function alarmClock(){const sec=AL&&AL.since?Math.floor((Date.now()-AL.since)/1000):0;return Math.floor(sec/60)+':'+pad(sec%60)}
+function alarmOff(){if(!AL)return;clearInterval(AL.tick);clearTimeout(AL.t1);clearTimeout(AL.t2);AL=null;Siren.stop();try{speechSynthesis.cancel()}catch(e){}const b=$('#alarm');if(b)b.remove()}
 document.addEventListener('click',e=>{if(e.target.closest('#alack')){urgentPending().forEach(t=>S.ack.add(urgKey(t)));saveAck();alarmOff();Snd.play('tap');render(true)}});
 
 /* ---------- completion feedback ---------- */

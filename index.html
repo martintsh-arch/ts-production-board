@@ -389,6 +389,47 @@ td.mono{color:var(--muted)}
 .al-btn{width:100%;min-height:80px;border:0;border-radius:20px;font-size:26px;font-weight:900;letter-spacing:.12em;color:#fff;background:linear-gradient(180deg,#FF7A5C,#D93A1E);box-shadow:0 6px 0 #7A1A0A}
 .al-btn:active{transform:translateY(4px);box-shadow:0 2px 0 #7A1A0A}
 @media (max-width:760px){.al-k{font-size:44px}.al-row b{font-size:21px}.al-row em{font-size:36px}.al-btn{font-size:21px;min-height:68px}}
+
+/* ---------- alarm, full intensity ---------- */
+#alarm{overflow:hidden;background:radial-gradient(circle at 50% 50%,rgba(255,40,10,.55),rgba(60,0,0,.95) 70%);animation:alarmbg2 .5s steps(2,jump-none) infinite}
+@keyframes alarmbg2{0%{background-color:rgba(30,0,0,.9)}100%{background-color:rgba(190,16,0,.9)}}
+.al-beams{position:absolute;inset:-50%;pointer-events:none;mix-blend-mode:screen}
+.al-beams i{position:absolute;inset:0;background:conic-gradient(from 0deg,transparent 0 8%,rgba(255,60,30,.75) 12%,transparent 17% 50%,rgba(255,60,30,.75) 62%,transparent 67%);animation:spin 1.6s linear infinite;filter:blur(6px)}
+.al-beams i+i{background:conic-gradient(from 90deg,transparent 0 8%,rgba(255,200,80,.45) 12%,transparent 16% 50%,rgba(255,200,80,.45) 62%,transparent 66%);animation-duration:2.3s;animation-direction:reverse}
+@keyframes spin{to{transform:rotate(360deg)}}
+.al-strobe{position:absolute;inset:0;pointer-events:none;background:#fff;opacity:0;animation:strobe 1.8s infinite}
+@keyframes strobe{0%,8%,16%,100%{opacity:0}4%,12%{opacity:.22}}
+.al-tape{position:absolute;left:-5%;right:-5%;height:64px;overflow:hidden;display:flex;align-items:center;
+  background:repeating-linear-gradient(135deg,#FFC21A 0 34px,#111 34px 68px);box-shadow:0 0 40px rgba(0,0,0,.6);border-block:4px solid #111}
+.al-tape{z-index:3;width:110vw;left:-5vw!important;right:auto!important}.al-tape.top{top:22px;transform:rotate(-2deg)} .al-tape.bot{bottom:22px;transform:rotate(2deg)}
+.al-tape>div{display:flex;white-space:nowrap;animation:tape 9s linear infinite}
+.al-tape.bot>div{animation-direction:reverse}
+.al-tape span{font:900 30px/1 var(--f-serif);letter-spacing:.3em;color:#111;background:#FFC21A;padding:6px 18px;margin:0 22px;border-radius:4px}
+@keyframes tape{to{transform:translateX(-50%)}}
+.al-box{position:relative;z-index:2;width:min(820px,100%);padding:26px 30px 30px;background:linear-gradient(180deg,#250806,#110302);border:4px solid #FF3B1F;
+  box-shadow:0 0 0 6px #111,0 0 0 12px #FFC21A,0 0 160px rgba(255,40,10,.9),inset 0 0 60px rgba(255,40,10,.35);animation:boxpulse .5s ease-in-out infinite alternate}
+@keyframes boxpulse{to{box-shadow:0 0 0 6px #111,0 0 0 12px #FFC21A,0 0 240px rgba(255,40,10,1),inset 0 0 90px rgba(255,40,10,.55)}}
+.al-box.shake{animation:shake .6s cubic-bezier(.36,.07,.19,.97) 2,boxpulse .5s .6s ease-in-out infinite alternate}
+@keyframes shake{10%,90%{transform:translate(-4px,2px) rotate(-.5deg)}20%,80%{transform:translate(8px,-4px) rotate(.8deg)}30%,50%,70%{transform:translate(-14px,6px) rotate(-1.2deg)}40%,60%{transform:translate(14px,-6px) rotate(1.2deg)}}
+.al-ic{display:none}
+.al-top{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.al-beacon{width:74px;height:74px;border-radius:50%;position:relative;background:radial-gradient(circle at 50% 40%,#FFB3A0,#FF2A0A 45%,#7A0A00 75%);box-shadow:0 0 30px #FF2A0A,0 0 80px rgba(255,42,10,.7);animation:beacon .5s steps(2,jump-none) infinite}
+.al-beacon span{position:absolute;inset:-60%;border-radius:50%;background:conic-gradient(from 0deg,transparent 0 70%,rgba(255,200,170,.85) 80%,transparent 90%);animation:spin .8s linear infinite}
+.al-beacon+.al-timer+.al-beacon span{animation-direction:reverse}
+@keyframes beacon{0%{filter:brightness(.6)}100%{filter:brightness(1.6)}}
+.al-timer{text-align:center;line-height:1}
+.al-timer small{display:block;font-size:14px;letter-spacing:.3em;color:#FFC9BC}
+.al-timer b{font:700 64px/1 var(--f-num);color:#FFC21A;text-shadow:0 0 20px rgba(255,194,26,.7)}
+.al-k{font-size:clamp(76px,12vw,150px)!important;letter-spacing:.24em!important;line-height:1.05!important;margin:6px -.24em 0 0;color:#fff;
+  text-shadow:0 0 12px #fff,0 0 40px #FF3B1F,0 0 90px #FF3B1F!important;animation:textflash .5s steps(2,jump-none) infinite}
+@keyframes textflash{0%{color:#fff}100%{color:#FFC21A}}
+.al-sub{font-size:20px!important;font-weight:700;color:#FFE0D6!important}
+.al-row{background:rgba(255,59,31,.18)!important;border:2px solid rgba(255,59,31,.7)!important}
+.al-row b{font-size:32px!important}
+.al-row em{font-size:60px!important;color:#FFC21A!important}
+.al-btn{min-height:96px!important;font-size:32px!important;letter-spacing:.16em!important;background:linear-gradient(180deg,#FFD84A,#FF9F0A)!important;color:#1A0800!important;box-shadow:0 7px 0 #8A4A00,0 0 50px rgba(255,194,26,.6)!important;animation:btnpulse 1s ease-in-out infinite}
+@keyframes btnpulse{50%{transform:scale(1.02)}}
+@media (max-width:760px){.al-tape{height:46px}.al-tape span{font-size:20px}.al-beacon{width:52px;height:52px}.al-timer b{font-size:44px}.al-row b{font-size:22px!important}.al-row em{font-size:40px!important}.al-btn{font-size:22px!important;min-height:76px!important}.al-box{padding:18px 16px 20px}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
