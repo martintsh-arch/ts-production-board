@@ -218,6 +218,8 @@ function planBar(){const p=S.plan;if(!p||S.pick)return '';
   chips.push(p.moved?'<span class="ai-chip c-move"><b>'+p.moved+'</b> 筆順序可優化</span>':'<span class="ai-chip c-ok">順序已是最佳</span>');
   const nr=p.routes.reduce((s,r)=>s+r.stops.filter(x=>x.region!=='未填地址').length,0);
   if(nr)chips.push('<span class="ai-chip c-route"><b>'+nr+'</b> 條配送區域</span>');
+  const risk=p.routes.filter(r=>(r.warn||[]).some(w=>w.level==='bad')).length;
+  if(risk)chips.push('<span class="ai-chip c-warn"><b>'+risk+'</b> 趟配送有風險</span>');
   if(p.noAddr.length)chips.push('<span class="ai-chip c-warn"><b>'+p.noAddr.length+'</b> 家缺地址</span>');
   return '<button type="button" class="ai-bar" id="aiopen"><span class="ai-core" aria-hidden="true"><i></i><i></i><b>AI</b></span><span class="ai-txt"><b>智慧排程</b><small>'+(p.auto?'自動排程中：新訂單進來會自動重排':'系統已分析所有訂單，按這裡看建議')+'</small></span><span class="ai-chips">'+chips.join('')+'</span><span class="ai-go">查看建議 ›</span></button>'}
 function openPlan(){S.planOpen=true;renderPlan()}
@@ -240,7 +242,7 @@ function renderPlan(){
       '<div class="ai-cs">'+m.products.slice(0,4).map(x=>'<span>'+esc(shortName(x))+'</span>').join('')+'</div>'+
       '<p>'+(m.shareLot?'同原料、同批號，可一次備料一起灌裝，省下換線與清洗時間。':'同一個品項，建議連續生產。')+(m.pulled?' 其中 <b>'+m.pulled+' 張</b>原本較晚出貨（'+m.dates.map(md).join('、')+'），建議提前一起做。':'')+'</p>'+
       (m.shareLot&&onBoard?'<button type="button" class="ai-act" data-aipick="'+i+'">這幾張一起完成（同一鍋）</button>':'')+'</div>'}).join('');
-  const routes=p.routes.map(r=>'<div class="ai-route"><div class="ai-rd">'+(r.date===p.today?'今天':md(r.date))+'</div><div class="ai-stops">'+r.stops.map((s,i)=>'<div class="ai-stop'+(s.region==='未填地址'?' na':'')+'"><span class="ai-pin">'+(s.region==='未填地址'?'?':i+1)+'</span><div><b>'+esc(s.region)+'</b><small>'+s.customers.map(esc).join('、')+(s.km!=null?'・約 '+s.km+' 公里':'')+'</small></div></div>').join('<i class="ai-arrow" aria-hidden="true"></i>')+'</div>'+(r.km?'<div class="ai-km">全程直線約 '+r.km+' 公里</div>':'')+'</div>').join('');
+  const routes=p.routes.map(r=>'<div class="ai-route"><div class="ai-rd">'+(r.date===p.today?'今天':md(r.date))+'</div><div class="ai-stops">'+r.stops.map((s,i)=>'<div class="ai-stop'+(s.region==='未填地址'?' na':'')+'"><span class="ai-pin">'+(s.region==='未填地址'?'?':i+1)+'</span><div><b>'+esc(s.region)+'</b><small>'+s.customers.map(esc).join('、')+(s.km!=null?'・約 '+s.km+' 公里':'')+'</small></div></div>').join('<i class="ai-arrow" aria-hidden="true"></i>')+'</div>'+(r.km?'<div class="ai-km">全程約 '+r.km+' 公里（來回）</div>':'')+'</div>').join('');
   const tips=[];
   p.combine.forEach(c=>tips.push('<b>'+esc(c.customer)+'</b> 有 '+c.dates.map(md).join('、')+' 多張公司配送單，建議合併成同一趟送。'));
   (p.far||[]).forEach(c=>tips.push('<b>'+esc(c.customer)+'</b> 離工廠直線約 '+c.km+' 公里，自己送很花時間，<b>建議改物流配送</b>。'));
@@ -279,41 +281,46 @@ function apsT(id){return S.open.find(t=>t.id===id)}
 function segTime(p,d){if(!p||!p.start)return '—';if(p.startDay===d&&p.day===d)return p.start+'–'+p.end;if(p.startDay===d)return p.start+' 開始';if(p.day===d)return '續～'+p.end;return '續做'}
 function etaTag(t){const p=S.aps&&S.aps.tasks&&S.aps.tasks[t.id];if(!p||!p.day||!p.line)return '';return '<span class="eta'+(p.late?' late':'')+'">'+(p.late?'⚠ 可能延誤・':'預計 ')+(p.day===today()?'':md(p.day)+' ')+(p.end||'')+' 完成</span>'}
 /* ---------- operator-friendly explanations ---------- */
-/* ---------- delivery map: suggested route, stop order, estimated arrival times ---------- */
-const DM={maps:{},cache:{},loading:null};
-const dmDepart=()=>store.get('tsb_depart')||'09:00', dmSvc=()=>{const v=+store.get('tsb_svc');return v>=0&&store.get('tsb_svc')!==''?v:20};
-const toMin=t=>{const m=/^(\d{1,2}):(\d{2})$/.exec(t||'');return m?(+m[1])*60+(+m[2]):540};
-const hm=m=>pad(Math.floor(m/60)%24)+':'+pad(Math.round(m)%60);
+/* ---------- delivery map: stop order, arrival times, receiving hours, production link (all computed on the server) ---------- */
+const DM={maps:{},geom:{},loading:null};
+const DMC=()=>Object.assign({depart:'09:00',svc:20,load:20,open:'09:00',close:'17:30',lunchFrom:'',lunchTo:''},(S.cfg&&S.cfg.delivery)||{});
+const hm=m=>pad(Math.floor(Math.round(m)/60)%24)+':'+pad(Math.round(m)%60);
+const hmd=m=>(m>=1440?'隔天 ':'')+hm(m);
+const durTxt=m=>m>=60?Math.floor(m/60)+' 時 '+Math.round(m%60)+' 分':Math.round(m)+' 分';
 const dmKey=r=>r.date+'|'+r.points.map(p=>p.lat+','+p.lng).join(';');
-/* legs: real road figures from OSRM when we have them, otherwise straight-line × 1.3 at 30 km/h (city traffic) */
-function dmLegs(r){
-  const c=DM.cache[dmKey(r)];
-  if(c&&c.legs)return {legs:c.legs,geom:c.geom,real:true};
-  const km=r.points.map(p=>p.legKm).concat([r.backKm]);
-  return {legs:km.map(k=>({km:Math.round(k*1.3*10)/10,min:k*1.3/30*60})),geom:null,real:false,failed:!!(c&&c.fail)};
-}
-function dmEta(r){
-  const L=dmLegs(r),svc=dmSvc();let t=toMin(dmDepart()),km=0;const rows=[];
-  r.points.forEach((p,i)=>{t+=L.legs[i].min;km+=L.legs[i].km;rows.push({p,arrive:t,km:L.legs[i].km,min:L.legs[i].min});t+=svc});
-  const lastLeg=L.legs[r.points.length];t=t-svc+lastLeg.min;km+=lastLeg.km;
-  return {rows,back:t,km:Math.round(km*10)/10,real:L.real,failed:L.failed,geom:L.geom};
-}
+function dmWinTxt(w){return w.open+'–'+w.close+(w.lunchFrom?'（午休 '+w.lunchFrom+'–'+w.lunchTo+'）':'')}
+function dmEditForm(name,p){const w=p.win,c=(S.customers.find(x=>x.name===name)||{});
+  const f=(k,v,lab)=>'<label class="dm-ef">'+lab+'<input type="time" data-dmw="'+k+'" value="'+esc(v||'')+'"></label>';
+  return '<div class="dm-edit"><p>這家客戶收貨的時間。留空＝用預設（'+esc(dmWinTxt({open:DMC().open,close:DMC().close,lunchFrom:DMC().lunchFrom,lunchTo:DMC().lunchTo}))+'）。</p><div class="dm-ew">'+
+    f('open',c.recv_open,'開門')+f('close',c.recv_close,'下班')+f('lunchFrom',c.recv_lunch_from,'午休開始')+f('lunchTo',c.recv_lunch_to,'午休結束')+'</div>'+
+    '<div class="dm-eb"><button type="button" class="primary" data-dmwinsave="'+esc(name)+'">儲存</button><button type="button" data-dmwinclear="'+esc(name)+'">改回預設</button><button type="button" data-dmwincancel>取消</button></div></div>'}
 function deliverySection(ctx){
-  const rs=((S.plan&&S.plan.routes)||[]).filter(r=>r.points&&r.points.length);
-  const any=((S.plan&&S.plan.routes)||[]).some(r=>r.stops.some(s=>s.region!=='未填地址'));
+  const all=(S.plan&&S.plan.routes)||[];
+  const rs=all.filter(r=>r.points&&r.points.length);
+  const any=all.some(r=>r.stops.some(s=>s.region!=='未填地址'));
   if(!rs.length)return '<section class="aps-sec dm"><h2>出貨路線地圖<span>公司配送的客戶地址確認後，這裡會出現地圖、站序和預計到達時間</span></h2><p class="hint">'+(any?'':'目前三天內沒有「公司配送」的訂單，或客戶還沒有已確認的地址。')+'</p></section>';
   if(!S.dmDay||!rs.some(r=>r.date===S.dmDay))S.dmDay=rs[0].date;
-  const r=rs.find(x=>x.date===S.dmDay),E=dmEta(r),td=today();
-  const tabs=rs.map(x=>'<button type="button" class="dm-day'+(x.date===S.dmDay?' on':'')+'" data-dmday="'+x.date+'">'+(x.date===td?'今天':md(x.date))+'<small>'+x.points.length+' 家</small></button>').join('');
-  const have=new Set(r.points.map(p=>p.name)),miss=[...new Set(r.stops.filter(x=>x.region!=='未填地址').flatMap(x=>x.customers))].filter(n=>!have.has(n));
-  const list=E.rows.map(q=>'<div class="dm-row"><span class="dm-n">'+q.p.stop+'</span><div class="dm-m"><b>'+esc(q.p.name)+'</b><small>距上一站約 '+q.km+' 公里・開車約 '+Math.max(1,Math.round(q.min))+' 分</small></div><div class="dm-t"><b>'+hm(q.arrive)+'</b><small>預計到</small></div></div>').join('');
-  const dur=E.back-toMin(dmDepart());
-  return '<section class="aps-sec dm"><h2>出貨路線地圖<span>公司配送，依距離由近到遠排站序</span></h2>'+
-    '<div class="dm-top"><div class="dm-tabs">'+tabs+'</div><label class="dm-f">出發時間<input type="time" data-dmdep value="'+esc(dmDepart())+'"></label><label class="dm-f">每家停留（分）<input type="number" min="0" max="120" step="5" data-dmsvc value="'+dmSvc()+'"></label></div>'+
+  const r=rs.find(x=>x.date===S.dmDay),D=DMC(),td=today(),dur=r.back-r.depart;
+  const tabs=rs.map(x=>{const bad=(x.warn||[]).some(w=>w.level==='bad');return '<button type="button" class="dm-day'+(x.date===S.dmDay?' on':'')+(bad?' bad':'')+'" data-dmday="'+x.date+'">'+(x.date===td?'今天':md(x.date))+(bad?' ⚠':'')+'<small>'+x.points.length+' 家</small></button>'}).join('');
+  const cf=(k,lab,v,ex)=>'<label class="dm-f">'+lab+'<input '+(ex||'type="time"')+' data-dmcfg="'+k+'" value="'+esc(v)+'"></label>';
+  const ctl='<div class="dm-top"><div class="dm-tabs">'+tabs+'</div>'+cf('depart','預設出發',D.depart)+cf('svc','每家停留（分）',D.svc,'type="number" min="0" max="180" step="5"')+cf('load','裝車（分）',D.load,'type="number" min="0" max="180" step="5"')+'</div>'+
+    '<details class="dm-def"><summary>預設收貨時間（客戶沒有另外設定時用）</summary><div class="dm-ew">'+cf('open','開門',D.open)+cf('close','下班',D.close)+cf('lunchFrom','午休開始',D.lunchFrom)+cf('lunchTo','午休結束',D.lunchTo)+'</div><p class="hint">午休兩格都留空＝不考慮午休。個別客戶的時間，在下面那家的「收貨時間」按鈕設定。</p></details>';
+  const rows=r.points.map(p=>{
+    const st=p.status,right=st==='late'?'<small class="dm-bad">超過下班 '+p.lateMin+' 分</small>':st==='lunch'||st==='wait'?'<small class="dm-amb">到了要等 '+p.wait+' 分，'+hm(p.start)+' 開始卸貨</small>':'<small>預計到</small>';
+    return '<div class="dm-row s-'+st+'"><span class="dm-n">'+p.seq+'</span><div class="dm-m"><b>'+esc(p.name)+'</b><small>距上一站 '+p.legKm+' 公里・開車約 '+Math.max(1,p.legMin)+' 分</small><small>收貨時間 '+esc(dmWinTxt(p.win))+(p.win.custom?'（個別設定）':'（預設）')+'</small></div>'+
+      '<button type="button" class="dm-winbtn" data-dmwin="'+esc(p.name)+'">收貨時間</button><div class="dm-t"><b>'+hmd(p.arrive)+'</b>'+right+'</div></div>'+(S.dmEdit===p.name?dmEditForm(p.name,p):'')}).join('');
+  const dep='<div class="dm-row dm-dep"><span class="dm-n">廠</span><div class="dm-m"><b>統香蜂蜜工廠出發</b><small>高雄市三民區重慶街 67 號</small>'+(r.departWhy?'<small class="dm-amb">'+esc(r.departWhy)+'</small>':'')+'</div><div class="dm-t"><b>'+hm(r.depart)+'</b><small>'+(r.departBasis==='完工'?'依完工時間':r.departBasis==='現在'?'從現在起':'預設出發')+'</small></div></div>';
+  const miss=[...new Set(r.stops.filter(x=>x.region!=='未填地址').flatMap(x=>x.customers))].filter(n=>!r.points.some(p=>p.name===n));
+  const warn=(r.warn||[]).map(w=>'<li class="dm-w '+w.level+'">'+(w.level==='bad'?'⚠ ':w.level==='warn'?'⏱ ':'💡 ')+esc(w.text)+'</li>').join('');
+  const long=r.pathKm>150||dur>600;
+  return '<section class="aps-sec dm"><h2>出貨路線地圖<span>公司配送：依行車時間與客戶收貨時間，排出最順的送貨順序</span></h2>'+ctl+
     '<div class="dmap" id="dm-'+ctx+'" data-ctx="'+ctx+'"></div>'+
-    '<div class="dm-sum"><div><b>'+E.km+'</b><small>公里（來回）</small></div><div><b>'+(dur>=60?Math.floor(dur/60)+' 時 '+Math.round(dur%60)+' 分':Math.round(dur)+' 分')+'</b><small>全程含停留</small></div><div><b>'+(E.back>=1440?'隔天 ':'')+hm(E.back)+'</b><small>預計回到工廠</small></div></div>'+
-    '<div class="dm-list"><div class="dm-row dm-dep"><span class="dm-n">廠</span><div class="dm-m"><b>統香蜂蜜工廠出發</b><small>高雄市三民區重慶街 67 號</small></div><div class="dm-t"><b>'+esc(dmDepart())+'</b><small>出發</small></div></div>'+list+'</div>'+
-    (E.km>150||dur>600?'<p class="dm-warn">⚠ 這一趟全程約 '+E.km+' 公里、要 '+(dur>=60?Math.floor(dur/60)+' 小時多':Math.round(dur)+' 分')+'，一天送不完。建議把最遠的客戶改物流配送，或分成兩天。</p>':'')+(miss.length?'<p class="dm-note">還沒有座標、沒畫在地圖上：'+miss.map(esc).join('、')+'（地址可能不完整，請到訂單補上正確地址）。</p>':'')+'<p class="dm-note">'+(E.real?'路線與行車時間來自 OpenStreetMap 道路資料（OSRM 免費服務），不含即時塞車。':E.failed?'道路資料暫時查不到，目前用直線距離 ×1.3、時速 30 公里估算。':'道路資料載入中，先用直線距離 ×1.3、時速 30 公里估算。')+'抵達時間只是參考，請依實際路況調整。</p></section>';
+    '<div class="dm-sum"><div><b>'+r.pathKm+'</b><small>公里（來回）</small></div><div><b>'+durTxt(dur)+'</b><small>全程含停留</small></div><div><b>'+hmd(r.back)+'</b><small>預計回到工廠</small></div></div>'+
+    (warn||long?'<ul class="dm-ws">'+warn+(long?'<li class="dm-w bad">⚠ 這一趟全程約 '+r.pathKm+' 公里、要 '+durTxt(dur)+'，一天送不完。建議把最遠的客戶改物流配送，或分成兩天。</li>':'')+'</ul>':'')+
+    '<div class="dm-list">'+dep+rows+'</div>'+
+    (r.departNote?'<p class="dm-note">'+esc(r.departNote)+'</p>':'')+
+    (miss.length?'<p class="dm-note">還沒有座標、沒排進路線：'+miss.map(esc).join('、')+'（地址可能不完整，請到訂單補上正確地址）。</p>':'')+
+    '<p class="dm-note">'+(r.basis==='road'?'行車時間與距離來自 OpenStreetMap 道路資料（OSRM 免費服務），不含即時塞車。':'道路資料還在載入或暫時查不到，目前用直線距離 ×1.3、時速 30 公里估算。')+'站序是依這些時間算出的最佳順序；到達時間只是參考，請依實際路況調整。</p></section>';
 }
 function loadLeaflet(){
   if(window.L)return Promise.resolve();
@@ -324,18 +331,18 @@ function loadLeaflet(){
   });
   return DM.loading;
 }
+/* the drawn line follows real roads (geometry from OSRM); times and distances come from the server */
 async function dmFetchRoad(r){
-  const k=dmKey(r);if(DM.cache[k])return;
-  DM.cache[k]={fail:false,pending:true};
+  const k=dmKey(r);if(DM.geom[k])return;
+  DM.geom[k]={pending:true};
   try{
     const co=[r.depot].concat(r.points,[r.depot]).map(p=>p.lng+','+p.lat).join(';');
     const ac=new AbortController(),to=setTimeout(()=>ac.abort(),9000);
     const res=await fetch('https://router.project-osrm.org/route/v1/driving/'+co+'?overview=full&geometries=geojson&steps=false',{signal:ac.signal});clearTimeout(to);
     const j=await res.json();
     if(!res.ok||j.code!=='Ok'||!j.routes||!j.routes[0])throw new Error('osrm');
-    const rt=j.routes[0];
-    DM.cache[k]={legs:rt.legs.map(l=>({km:Math.round(l.distance/100)/10,min:l.duration/60})),geom:rt.geometry.coordinates.map(c=>[c[1],c[0]])};
-  }catch(e){DM.cache[k]={fail:true}}
+    DM.geom[k]={line:j.routes[0].geometry.coordinates.map(c=>[c[1],c[0]])};
+  }catch(e){DM.geom[k]={fail:true}}
   dmRefresh();
 }
 function dmRefresh(){if(S.planOpen)renderPlan();else if(document.querySelector('#v-aps .dmap'))renderAps()}
@@ -347,22 +354,29 @@ async function dmAfter(){
       if(!document.body.contains(el)||DM.maps[ctx])return;
       const L=window.L,map=L.map(el,{scrollWheelZoom:false,zoomControl:true,attributionControl:true});DM.maps[ctx]=map;
       L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
-      const E=dmEta(r),pts=[[r.depot.lat,r.depot.lng]].concat(r.points.map(p=>[p.lat,p.lng]),[[r.depot.lat,r.depot.lng]]);
-      L.polyline(E.geom||pts,{color:'#F2B33D',weight:5,opacity:.9,dashArray:E.geom?null:'8 8'}).addTo(map);
-      L.marker(pts[0],{icon:L.divIcon({className:'',html:'<div class="dm-pin dep">廠</div>',iconSize:[34,34],iconAnchor:[17,17]})}).addTo(map).bindTooltip('統香蜂蜜工廠（出發／回程）');
-      E.rows.forEach(q=>L.marker([q.p.lat,q.p.lng],{icon:L.divIcon({className:'',html:'<div class="dm-pin">'+q.p.stop+'</div>',iconSize:[34,34],iconAnchor:[17,17]})}).addTo(map).bindTooltip(esc(q.p.name)+'　預計 '+hm(q.arrive)+' 到',{direction:'top'}));
+      const g=DM.geom[dmKey(r)],pts=[[r.depot.lat,r.depot.lng]].concat(r.points.map(p=>[p.lat,p.lng]),[[r.depot.lat,r.depot.lng]]);
+      L.polyline(g&&g.line?g.line:pts,{color:'#F2B33D',weight:5,opacity:.9,dashArray:g&&g.line?null:'8 8'}).addTo(map);
+      L.marker(pts[0],{icon:L.divIcon({className:'',html:'<div class="dm-pin dep">廠</div>',iconSize:[34,34],iconAnchor:[17,17]})}).addTo(map).bindTooltip('統香蜂蜜工廠（'+hm(r.depart)+' 出發）');
+      r.points.forEach(p=>L.marker([p.lat,p.lng],{icon:L.divIcon({className:'',html:'<div class="dm-pin'+(p.status==='late'?' late':p.status==='ok'?'':' wait')+'">'+p.seq+'</div>',iconSize:[34,34],iconAnchor:[17,17]})}).addTo(map).bindTooltip(esc(p.name)+'　預計 '+hmd(p.arrive)+' 到',{direction:'top'}));
       map.fitBounds(L.latLngBounds(pts),{padding:[30,30],animate:false});
       setTimeout(()=>{if(DM.maps[ctx]===map){try{map.invalidateSize(false)}catch(e){}}},50);
     }).catch(()=>{el.innerHTML='<p class="hint" style="padding:16px">地圖圖層載入失敗（網路問題）。下方的站序和預計時間仍可使用。</p>'});
     dmFetchRoad(r);
   });
 }
-document.addEventListener('click',e=>{const b=e.target.closest('[data-dmday]');if(b){S.dmDay=b.dataset.dmday;if(S.planOpen)renderPlan();else renderAps()}});
-document.addEventListener('change',e=>{const t=e.target;
-  if(t.matches('[data-dmdep]')){if(/^\d{1,2}:\d{2}$/.test(t.value))store.set('tsb_depart',t.value);t.blur();dmRefresh()}
-  if(t.matches('[data-dmsvc]')){store.set('tsb_svc',String(Math.max(0,Math.min(120,+t.value||0))));t.blur();dmRefresh()}});
+document.addEventListener('click',async e=>{const t=e.target;
+  const d=t.closest('[data-dmday]');if(d){S.dmDay=d.dataset.dmday;S.dmEdit=null;return dmRefresh()}
+  const w=t.closest('[data-dmwin]');if(w){S.dmEdit=S.dmEdit===w.dataset.dmwin?null:w.dataset.dmwin;return dmRefresh()}
+  if(t.closest('[data-dmwincancel]')){S.dmEdit=null;return dmRefresh()}
+  const sv=t.closest('[data-dmwinsave]'),cl=t.closest('[data-dmwinclear]');
+  if(sv||cl){const name=(sv||cl).dataset.dmwinsave||(sv||cl).dataset.dmwinclear,body={name,open:'',close:'',lunchFrom:'',lunchTo:''};
+    if(sv)document.querySelectorAll('[data-dmw]').forEach(i=>{body[i.dataset.dmw]=i.value});
+    const ok=await act(()=>api('POST','/api/customers/window',body),cl?'已改回預設時間':'已儲存收貨時間，路線已重新計算');if(ok){S.dmEdit=null;dmRefresh()}}
+});
+document.addEventListener('change',async e=>{const t=e.target;
+  if(t.matches('[data-dmcfg]')){const k=t.dataset.dmcfg,v=(t.type==='number')?+t.value:t.value;t.blur();await act(()=>api('PUT','/api/delivery',{[k]:v}),'已更新，路線已重新計算');dmRefresh()}});
 /* ---------- address suggestions found online: a person confirms before they are used ---------- */
-function stopIdx(t,D){const r=((S.plan&&S.plan.routes)||[]).find(x=>x.date===D);if(!r)return 99;const i=r.stops.findIndex(s=>s.region!=='未填地址'&&s.customers.includes(t.customer));return i<0?99:i}
+function stopIdx(t,D){const r=((S.plan&&S.plan.routes)||[]).find(x=>x.date===D);if(!r)return 99;const i=(r.points||[]).findIndex(p=>p.name===t.customer);return i<0?99:i}
 function geoState(name){const c=S.customers.find(x=>x.name===name)||{};
   if(c.address_suggest)return '<small class="geo-st">網路上找到候選地址，見下方「請確認」</small>';
   if(!c.geo_tried_at)return '<small class="geo-st">⏳ 系統正在網路上自動搜尋（免費地圖，每秒查一筆）</small>';
@@ -424,6 +438,7 @@ function opsGuide(){
 document.addEventListener('toggle',e=>{if(e.target.matches&&e.target.matches('details.rules'))store.set('tsb_rules',e.target.open?'0':'1')},true);
 function wkName(d){return '週'+WD[new Date(d+'T00:00:00').getDay()]}
 function renderAps(){
+  const ae=document.activeElement;if(ae&&ae.tagName==='INPUT'&&ae.closest&&ae.closest('#v-aps .dm'))return;
   const v=$('#v-aps');const A=S.aps;if(!v)return;
   if(!A||A.error){v.innerHTML='<header class="pg-head"><h1>排程</h1><p>'+(A&&A.error?'計算失敗：'+esc(A.error):'載入中…')+'</p></header>';return}
   if(S.apsEdit){return renderApsEdit()}
