@@ -5,6 +5,7 @@ const { Pool, types } = require('pg');
 types.setTypeParser(1082, (v) => v); // DATE columns stay 'YYYY-MM-DD' strings
 const APS = require('./aps');
 const GEO = require('./geo');
+const DEL = require('./delivery');
 
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -115,6 +116,11 @@ async function migrate() {
     ALTER TABLE customers ADD COLUMN IF NOT EXISTS geo_tried_at TIMESTAMPTZ;
     ALTER TABLE customers ADD COLUMN IF NOT EXISTS geo_addr TEXT NOT NULL DEFAULT '';
     ALTER TABLE customers ADD COLUMN IF NOT EXISTS geo_precision TEXT NOT NULL DEFAULT '';
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS recv_open TEXT NOT NULL DEFAULT '';
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS recv_close TEXT NOT NULL DEFAULT '';
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS recv_lunch_from TEXT NOT NULL DEFAULT '';
+    ALTER TABLE customers ADD COLUMN IF NOT EXISTS recv_lunch_to TEXT NOT NULL DEFAULT '';
+    CREATE TABLE IF NOT EXISTS road_legs (a TEXT NOT NULL, b TEXT NOT NULL, minutes REAL NOT NULL, km REAL NOT NULL, PRIMARY KEY (a, b));
     ALTER TABLE products ADD COLUMN IF NOT EXISTS no_lot BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
@@ -240,7 +246,7 @@ app.get('/api/state', wrap(async (req, res) => {
     pool.query(`SELECT * FROM tasks WHERE status = 'done' ORDER BY completed_at DESC LIMIT 2000`),
     pool.query(`SELECT * FROM products ORDER BY code NULLS LAST, name`),
     getConfig(),
-    pool.query(`SELECT id, name, code, address, lat, lng, address_suggest, suggest_src, suggest_conf, geo_precision, geo_tried_at FROM customers ORDER BY name`),
+    pool.query(`SELECT id, name, code, address, lat, lng, address_suggest, suggest_src, suggest_conf, geo_precision, geo_tried_at, recv_open, recv_close, recv_lunch_from, recv_lunch_to FROM customers ORDER BY name`),
     pool.query(`SELECT customer, product_id, times FROM customer_products ORDER BY times DESC, last_at DESC`),
     pool.query(`SELECT product_id, lot, MAX(completed_at) AS at FROM tasks
                 WHERE status='done' AND lot ~ '^[A-Z0-9]+-[A-Z]$' AND completed_at > now() - interval '400 days'
@@ -251,6 +257,10 @@ app.get('/api/state', wrap(async (req, res) => {
     const a = recentLots[r.product_id] = recentLots[r.product_id] || [];
     if (a.length < 8) a.push([r.lot, taipeiDate(r.at)]);
   });
+  const aps = await computeAps(null, [open.rows, done.rows.filter((t) => t.started_at), customers.rows, config]).catch((e) => ({ error: e.message }));
+  const ex = { aps: aps && !aps.error ? aps : null, legs: legsGet, nowMin: nowMinTW(), need: [] };
+  const plan = smartPlan(open.rows, customers.rows, config, ex);
+  if (ex.need.length) legsWant(ex.need);
   res.json({
     rev: Number(rev.rows[0].value),
     open: open.rows.map(rowTask),
@@ -261,11 +271,80 @@ app.get('/api/state', wrap(async (req, res) => {
     recentLots,
     config,
     now: taipeiParts(),
-    plan: smartPlan(open.rows, customers.rows, config),
-    aps: await computeAps(null, [open.rows, done.rows.filter((t) => t.started_at), customers.rows, config]).catch((e) => ({ error: e.message })),
+    plan, aps,
     runs: (await pool.query(`SELECT id, at, reason, summary FROM plan_runs ORDER BY id DESC LIMIT 30`)).rows.map((r) => ({ id: r.id, at: r.at, reason: r.reason, diff: r.summary.diff, late: r.summary.late, overload: r.summary.overload, undo: !!r.summary.undo })),
   });
 }));
+
+/* ---------- delivery: when can the truck leave? (production finish times from the APS) ---------- */
+function readiness(d, tasks, aps, dcfg, nowMin) {
+  let dep = DEL.tm(dcfg.depart), basis = '預設', why = '', note = '', holdBack = null;
+  const late = [], rows = [];
+  if (aps && aps.tasks) {
+    let unknown = 0;
+    tasks.forEach((t) => {
+      const p = aps.tasks[t.id];
+      if (!p || !p.day || !p.line || (p.flags || []).includes('工時未知')) { unknown++; return; }
+      if (p.day > d) { late.push({ customer: t.customer, day: p.day }); return; }
+      if (p.day === d && p.end) rows.push({ customer: t.customer, end: p.end, at: DEL.tm(p.end) + dcfg.load });
+    });
+    rows.sort((a, b) => b.at - a.at);
+    if (rows.length && rows[0].at > dep) { dep = rows[0].at; basis = '完工'; why = rows[0].customer + ' 的貨 ' + rows[0].end + ' 完工，再加裝車 ' + dcfg.load + ' 分'; }
+    if (rows.length > 1 && rows[0].at - rows[1].at >= 60) holdBack = { customer: rows[0].customer, end: rows[0].end, otherAt: DEL.hm(rows[1].at) };
+    if (!(aps.lines || []).length) note = '還沒有設定生產線，出發時間先用預設 ' + dcfg.depart + '。到「排程參數」設好產線與每小時產量後，會依貨的完工時間自動決定。';
+    else if (unknown) note = unknown + ' 張訂單算不出完工時間（沒指定產線或沒有工時資料），出發時間只依其他訂單與預設 ' + dcfg.depart + ' 決定。';
+  } else note = '出發時間用預設 ' + dcfg.depart + '。';
+  if (nowMin != null && dep < nowMin) { dep = Math.ceil(nowMin / 5) * 5; basis = '現在'; why = '今天這趟已過預設出發時間，從現在算起'; }
+  return { depart: dep, basis, why, note, holdBack, late };
+}
+
+/* ---------- road drive-time cache (OSRM public server, free). Matrix is fetched in the background; until it arrives the estimate is used ---------- */
+const OSRM = (process.env.OSRM_URL || 'https://router.project-osrm.org').replace(/\/$/, '');
+const LEGS = new Map();                 // 'latA,lngA|latB,lngB' → { min, km }
+const legsGet = (a, b) => LEGS.get(a + '|' + b) || null;
+const legsWanted = new Map(), legsFailed = new Map();
+let legsBusy = false, legsTimer = null;
+function legsWant(list) {
+  list.forEach((pts) => {
+    const keys = [...new Set(pts.map((p) => DEL.pk(p.lat, p.lng)))].sort(), key = keys.join(';');
+    if (legsWanted.has(key) || (legsFailed.get(key) || 0) > Date.now() - 600000) return;
+    legsWanted.set(key, pts);
+  });
+  if (legsWanted.size) legsKick(300);
+}
+function legsKick(ms) { clearTimeout(legsTimer); legsTimer = setTimeout(legsTick, ms == null ? 1200 : ms); }
+async function legsTick() {
+  if (process.env.OSRM_OFF === '1' || legsBusy || !legsWanted.size) return;
+  legsBusy = true;
+  const [key, pts] = legsWanted.entries().next().value; legsWanted.delete(key);
+  let next = 1500;
+  try {
+    const seen = new Set(), uniq = pts.filter((p) => { const k = DEL.pk(p.lat, p.lng); if (seen.has(k)) return false; seen.add(k); return true; });
+    const co = uniq.map((p) => (+p.lng).toFixed(5) + ',' + (+p.lat).toFixed(5)).join(';');
+    const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 12000);
+    let j;
+    try { const r = await fetch(OSRM + '/table/v1/driving/' + co + '?annotations=duration,distance', { signal: ctl.signal, headers: { 'User-Agent': GEO.UA } }); j = await r.json(); } finally { clearTimeout(to); }
+    if (!j || j.code !== 'Ok' || !j.durations || !j.distances) throw new Error('osrm ' + (j && j.code));
+    const keys = uniq.map((p) => DEL.pk(p.lat, p.lng)), A = [], B = [], Mn = [], Km = [];
+    for (let i = 0; i < keys.length; i++) for (let k = 0; k < keys.length; k++) {
+      const du = j.durations[i][k], di = j.distances[i][k];
+      if (i === k || du == null || di == null) continue;
+      A.push(keys[i]); B.push(keys[k]); Mn.push(du / 60); Km.push(di / 1000);
+    }
+    if (A.length) {
+      await pool.query(`INSERT INTO road_legs (a,b,minutes,km) SELECT * FROM unnest($1::text[],$2::text[],$3::real[],$4::real[])
+        ON CONFLICT (a,b) DO UPDATE SET minutes=EXCLUDED.minutes, km=EXCLUDED.km`, [A, B, Mn, Km]);
+      A.forEach((a, i) => LEGS.set(a + '|' + B[i], { min: Mn[i], km: Km[i] }));
+      await bump();
+    }
+  } catch (e) { console.error('legs', e.message); legsFailed.set(key, Date.now()); next = 30000; }
+  legsBusy = false;
+  if (legsWanted.size) legsKick(next);
+}
+async function legsLoad() {
+  const { rows } = await pool.query(`SELECT a, b, minutes, km FROM road_legs`);
+  rows.forEach((r) => LEGS.set(r.a + '|' + r.b, { min: r.minutes, km: r.km }));
+}
 
 /* ---------- smart scheduling: merge same batch, earliest ship date first, logistics → own delivery → pickup ---------- */
 const METHOD_RANK = { '物流配送': 0, '公司配送': 1, '': 1, '門市自取': 2 };
@@ -281,7 +360,7 @@ function regionOf(addr) {
   const c = a.match(/^(.{2}[市縣])/);
   return c ? c[1] : '';
 }
-function smartPlan(open, customers, cfg) {
+function smartPlan(open, customers, cfg, extra) {
   const tp = taipeiParts(), td = tp.y + '-' + tp.m + '-' + tp.d;
   const cats = (cfg && cfg.cats) || {}, vars = (cfg && cfg.varieties) || {};
   const eff = (t) => (t.ship_date < td ? td : t.ship_date);
@@ -344,55 +423,57 @@ function smartPlan(open, customers, cfg) {
     };
   }).filter((m) => m.anchor <= addDaysStr(td, 3)).slice(0, 12);
 
-  // delivery: own-truck orders grouped by day → region
-  const addr = {}; customers.forEach((c) => { addr[c.name] = c.address || ''; });
+  // delivery: own-truck orders grouped by day. Stop order = best order by drive time and each customer's receiving hours.
+  const addr = {}, crow = {}; customers.forEach((c) => { addr[c.name] = c.address || ''; crow[c.name] = c; });
   const horizon = addDaysStr(td, 3);
   const own = open.filter((t) => t.ship_method === '公司配送' && eff(t) <= horizon);
-  const days = {};
-  own.forEach((t) => {
-    const d = eff(t), r = regionOf(addr[t.customer]) || '未填地址';
-    const day = days[d] = days[d] || {};
-    const g = day[r] = day[r] || { region: r, customers: {}, n: 0 };
-    g.customers[t.customer] = (g.customers[t.customer] || 0) + 1; g.n++;
-  });
-  // stop order: nearest-neighbour from the factory on straight-line distance (an estimate, not driving time)
   const geo = {}; customers.forEach((c) => { if (c.lat != null && c.lng != null && c.address) geo[c.name] = [+c.lat, +c.lng]; });
   const depot = (cfg && cfg.depot) || DEPOT;
+  const dcfg = DEL.normCfg(cfg && cfg.delivery);
+  const ex = extra || {};
+  const days = {};
+  own.forEach((t) => { const m = days[eff(t)] = days[eff(t)] || {}; m[t.customer] = (m[t.customer] || 0) + 1; });
   const routes = Object.keys(days).sort().map((d) => {
-    const stops = Object.values(days[d]).map((g) => {
-      const pts = Object.keys(g.customers).map((n) => geo[n]).filter(Boolean);
-      const c = pts.length ? [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length] : null;
-      return { region: g.region, customers: Object.keys(g.customers), orders: g.n, at: c };
+    const names = Object.keys(days[d]);
+    const located = names.filter((n) => geo[n] && regionOf(addr[n])).slice(0, DEL.MAX_STOPS);
+    const unlocated = names.filter((n) => !located.includes(n));
+    const rd = readiness(d, own.filter((t) => eff(t) === d), ex.aps, dcfg, d === td ? ex.nowMin : null);
+    const pr = DEL.planRoute({ cust: located.map((n) => ({ name: n, lat: geo[n][0], lng: geo[n][1], c: crow[n] })), depot, cfg: dcfg, depart: rd.depart, legs: ex.legs });
+    if (pr.points.length && pr.basis === 'estimate' && ex.need) ex.need.push(pr.pts);
+    // stops = consecutive customers in the same district
+    const stops = [];
+    pr.points.forEach((p) => {
+      const rg = regionOf(addr[p.name]), last = stops[stops.length - 1];
+      if (last && last.region === rg) { last.customers.push(p.name); last.orders += days[d][p.name]; last.km = Math.round((last.km + p.legKm) * 10) / 10; }
+      else stops.push({ region: rg, customers: [p.name], orders: days[d][p.name], km: p.legKm });
+      p.stop = stops.length;
     });
-    const known = stops.filter((x) => x.at && x.region !== '未填地址'), rest2 = stops.filter((x) => !(x.at && x.region !== '未填地址'));
-    const ordered = []; let cur = [depot.lat, depot.lng], total = 0;
-    while (known.length) {
-      let bi = 0, bd = Infinity;
-      known.forEach((x, i) => { const dd = kmBetween(cur, x.at); if (dd < bd) { bd = dd; bi = i; } });
-      const x = known.splice(bi, 1)[0]; x.km = Math.round(bd * 10) / 10; total += bd; cur = x.at; ordered.push(x);
-    }
-    rest2.sort((a, b) => (a.region === '未填地址') - (b.region === '未填地址') || a.region.localeCompare(b.region, 'zh-Hant'));
-    // exact drop-off sequence for the map: inside each stop, nearest customer first, continuing from the previous point
-    const points = []; let from = [depot.lat, depot.lng], pathKm = 0;
-    ordered.forEach((x, si) => {
-      const rem = x.customers.filter((n) => geo[n]).map((n) => ({ name: n, lat: geo[n][0], lng: geo[n][1] }));
-      while (rem.length) {
-        let bi = 0, bd = Infinity;
-        rem.forEach((q, i) => { const dd = kmBetween(from, [q.lat, q.lng]); if (dd < bd) { bd = dd; bi = i; } });
-        const q = rem.splice(bi, 1)[0]; pathKm += bd; from = [q.lat, q.lng];
-        points.push({ stop: si + 1, name: q.name, lat: q.lat, lng: q.lng, legKm: Math.round(bd * 10) / 10 });
-      }
+    const rest = {};
+    unlocated.forEach((n) => { const rg = regionOf(addr[n]) || '未填地址'; const g = rest[rg] = rest[rg] || { region: rg, customers: [], orders: 0 }; g.customers.push(n); g.orders += days[d][n]; });
+    const rest2 = Object.values(rest).sort((a, b) => (a.region === '未填地址') - (b.region === '未填地址') || a.region.localeCompare(b.region, 'zh-Hant'));
+    const warn = [];
+    rd.late.forEach((x) => warn.push({ level: 'bad', text: x.customer + ' 的貨預計 ' + x.day.slice(5).replace('-', '/') + ' 才做完，晚於送貨日 ' + d.slice(5).replace('-', '/') + '，趕不上這趟。' }));
+    pr.points.forEach((p) => {
+      if (p.status === 'late') warn.push({ level: 'bad', text: '預計 ' + DEL.hmd(p.arrive) + ' 才到 ' + p.name + '，晚於他們的下班時間 ' + p.win.close + '（晚 ' + p.lateMin + ' 分）。要準時到，整趟約需提早 ' + p.lateMin + ' 分出發（目前 ' + DEL.hm(rd.depart) + ' 出發' + (rd.basis === '完工' ? '，由貨的完工時間決定' : '') + '）。' });
+      else if (p.status === 'lunch') warn.push({ level: 'warn', text: p.name + ' 預計 ' + DEL.hm(p.arrive) + ' 到會遇到午休，已排到 ' + DEL.hm(p.start) + ' 之後（等 ' + p.wait + ' 分）。' });
+      else if (p.wait >= 30) warn.push({ level: 'warn', text: p.name + ' 預計 ' + DEL.hm(p.arrive) + ' 就到了，但他們 ' + p.win.open + ' 才開門，要等 ' + p.wait + ' 分。' });
     });
-    const backKm = points.length ? Math.round(kmBetween(from, [depot.lat, depot.lng]) * 10) / 10 : 0;
-    return { date: d, stops: ordered.concat(rest2).map((x) => ({ region: x.region, customers: x.customers, orders: x.orders, km: x.km })), km: Math.round(total),
-      points, backKm, pathKm: Math.round((pathKm + backKm) * 10) / 10, depot: { name: depot.name, lat: depot.lat, lng: depot.lng } };
+    if (rd.holdBack) warn.push({ level: 'info', text: rd.holdBack.customer + ' 的貨 ' + rd.holdBack.end + ' 才做完，拖慢整趟出發；其他貨 ' + rd.holdBack.otherAt + ' 前就緒，可考慮把它排到最前面先做，或這家改下一趟。' });
+    if (!pr.exact && pr.points.length > DEL.EXACT_MAX) warn.push({ level: 'info', text: '站數超過 ' + DEL.EXACT_MAX + ' 家，站序是近似最佳解（通常很接近最佳）。' });
+    return {
+      date: d, stops: stops.concat(rest2), km: Math.round(pr.km),
+      points: pr.points, backKm: pr.backKm, backMin: pr.backMin, pathKm: pr.km, back: pr.back,
+      depart: rd.depart, departBasis: rd.basis, departWhy: rd.why, departNote: rd.note,
+      basis: pr.basis, exact: pr.exact, svc: dcfg.svc, warn,
+      depot: { name: depot.name, lat: depot.lat, lng: depot.lng },
+    };
   });
   // far own-truck customers → suggest logistics instead
   const far = [...new Set(own.map((t) => t.customer))].filter((n) => geo[n] && kmBetween([depot.lat, depot.lng], geo[n]) > FAR_KM)
     .map((n) => ({ customer: n, km: Math.round(kmBetween([depot.lat, depot.lng], geo[n])) }));
   // tell operators which delivery stop an order belongs to
   routes.forEach((r) => r.stops.forEach((st, i) => { if (st.region === '未填地址') return;
-    own.filter((t) => eff(t) === r.date && st.customers.includes(t.customer)).forEach((t) => { (why[t.id] = why[t.id] || []).push('配送第 ' + (i + 1) + ' 站（' + st.region.replace(/^.{2}[市縣]/, '') + '）'); }); }));
+    own.filter((t) => eff(t) === r.date && st.customers.includes(t.customer)).forEach((t) => { const pt = r.points.find((x) => x.name === t.customer); (why[t.id] = why[t.id] || []).push('配送第 ' + (pt ? pt.seq : i + 1) + ' 站（' + st.region.replace(/^.{2}[市縣]/, '') + '）' + (pt ? '・預計 ' + DEL.hm(pt.arrive) + ' 到' : '')); }); }));
   // same customer, different nearby days → one trip
   const byCust = {};
   own.forEach((t) => { (byCust[t.customer] = byCust[t.customer] || new Set()).add(eff(t)); });
@@ -447,7 +528,7 @@ async function computeAps(db, given) {
 const RUN_LABEL = [
   [/^\/tasks\/batch$/, '新增訂單'], [/^\/tasks\/\d+$/, '修改訂單'], [/\/void$/, '取消訂單'], [/\/urgent$/, '緊急插單'],
   [/finish/, '完成生產'], [/^\/tasks\/reorder$/, '手動調整順序'], [/^\/plan\/apply$/, '套用智慧排程'], [/^\/plan\/auto$/, '切換自動排程'],
-  [/^\/plan\/undo/, '還原排程'], [/\/lock$/, '人工鎖定'], [/\/hold$/, '待料／缺料'], [/\/start$/, '開工'], [/^\/aps$/, '修改排程參數'],
+  [/^\/plan\/undo/, '還原排程'], [/\/lock$/, '人工鎖定'], [/\/hold$/, '待料／缺料'], [/\/start$/, '開工'], [/^\/aps$/, '修改排程參數'], [/^\/delivery$/, '修改配送參數'], [/^\/customers\/window$/, '修改客戶收貨時間'],
 ];
 let runTimer = null, runReasons = [];
 app.use('/api', (req, res, next) => {
@@ -697,6 +778,25 @@ app.post('/api/tasks/:id/start', wrap(async (req, res) => {
   if (!rowCount) throw new UserError('這筆已完成或取消');
   await bump();
   res.json({ ok: true, on });
+}));
+app.put('/api/delivery', wrap(async (req, res) => {
+  const cur = ((await getConfig()) || {}).delivery || {};
+  const d = DEL.normCfg({ ...cur, ...(req.body || {}) });
+  await pool.query(`UPDATE config SET data = jsonb_set(data, '{delivery}', $1::jsonb) WHERE id=1`, [JSON.stringify(d)]);
+  await bump();
+  res.json({ ok: true, delivery: d });
+}));
+app.post('/api/customers/window', wrap(async (req, res) => {
+  const b = req.body || {}, name = str(b.name, 100);
+  const f = (v) => { v = str(v, 5); if (v === '') return ''; const m = DEL.tm(v); if (m == null) throw new UserError('時間請填 24 小時制，例如 09:00'); return DEL.hm(m); };
+  const o = f(b.open), c = f(b.close), lf = f(b.lunchFrom), lt = f(b.lunchTo);
+  if (o && c && DEL.tm(c) <= DEL.tm(o)) throw new UserError('下班時間要晚於開門時間');
+  if ((lf && !lt) || (!lf && lt)) throw new UserError('午休請同時填開始與結束，或兩個都留空');
+  if (lf && DEL.tm(lt) <= DEL.tm(lf)) throw new UserError('午休結束要晚於開始');
+  const { rowCount } = await pool.query(`UPDATE customers SET recv_open=$2, recv_close=$3, recv_lunch_from=$4, recv_lunch_to=$5 WHERE name=$1`, [name, o, c, lf, lt]);
+  if (!rowCount) throw new UserError('找不到這個客戶');
+  await bump();
+  res.json({ ok: true });
 }));
 app.put('/api/aps', wrap(async (req, res) => {
   const a = APS.normAps(req.body || {});
@@ -1209,5 +1309,6 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/app.js', (req, res) => res.sendFile(path.join(__dirname, 'app.js')));
 
 migrate()
+  .then(() => legsLoad().catch((e) => console.error('legsLoad', e.message)))
   .then(() => app.listen(PORT, () => { console.log('生產看板已啟動，port ' + PORT); geoKick(5000); }))
   .catch((e) => { console.error('資料庫初始化失敗：', e.message); process.exit(1); });
