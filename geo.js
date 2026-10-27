@@ -57,6 +57,8 @@ function addrFrom(a) {
 async function searchName(name, near) {
   const core = coreName(name);
   if (core.length < 2) return null;
+  // never look up a private person: 2–4 Chinese characters with no shop/company word is treated as a personal name
+  if (/^[\u4e00-\u9fff]{2,4}$/.test(core) && !/[行店司堂社館坊廠場園號屋舖鋪商蜂藥茶食品業會局院所]/.test(core)) return null;
   const res = await search('q=' + enc(core + (near ? ' ' + near : '')));
   await sleep(1100);
   const hit = res.find((x) => { const n = coreName(x.name || ''); return n && (n.includes(core) || core.includes(n)) && Math.min(n.length, core.length) >= 2; });
