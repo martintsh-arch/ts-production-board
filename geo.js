@@ -73,4 +73,4 @@ async function searchName(name, near) {
   };
 }
 
-module.exports = { geocodeAddress, searchName, parseAddr, coreName };
+module.exports = { geocodeAddress, searchName, parseAddr, coreName, UA };
