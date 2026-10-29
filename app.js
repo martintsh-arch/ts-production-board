@@ -574,7 +574,7 @@ function varietySfx(){if(!Snd.on)return;Snd.unlock();const c=Snd.ctx;if(!c)retur
 }catch(e){}}
 function celebrate(title,sub,lots){
   const box=document.createElement('div');box.className='vx';box.setAttribute('role','status');
-  const BIG=['大成功！','完成啦！'];const big=lots&&lots.length&&/同一批/.test(title)?'一鍋搞定！':BIG[Math.floor(Math.random()*2)];
+  const big=/同一批/.test(title)?'整鍋完成':'任務完成';
   let conf='';const cols=['#FFE14D','#FF3B6B','#3BC8FF','#5CFF8A','#FF9A1F','#FFFFFF','#B07CFF'];
   for(let i=0;i<70;i++)conf+='<i style="--x:'+(Math.random()*100).toFixed(1)+'vw;--d:'+(Math.random()*.7).toFixed(2)+'s;--t:'+(1.8+Math.random()*1.6).toFixed(2)+'s;--r:'+Math.round(Math.random()*720-360)+'deg;--dx:'+Math.round(Math.random()*160-80)+'px;background:'+cols[i%cols.length]+';width:'+(6+Math.random()*10).toFixed(0)+'px;height:'+(10+Math.random()*14).toFixed(0)+'px"></i>';
   box.innerHTML='<div class="vx-lines" aria-hidden="true"></div><div class="vx-flash" aria-hidden="true"></div><div class="vx-conf" aria-hidden="true">'+conf+'</div>'+
@@ -1179,7 +1179,8 @@ function openLotEdit(t){
 /* ---------- settings ---------- */
 function renderSettings(){
   const v=$('#v-settings'),c=cfg();
-  let h='<header class="pg-head"><h1>設定</h1><p>人員、品項主檔、批號規則都在這裡，改了所有裝置立刻同步</p></header><h2>人員名單</h2><div class="panel"><div class="chips" style="margin-bottom:12px">'+((c.people||[]).map((n,i)=>'<button class="chip" data-delp="'+i+'" title="移除">'+esc(n)+'　×</button>').join('')||'<span class="hint">還沒有人員，新增後在看板完成生產時可以點選。</span>')+'</div>'+
+  const th=store.get('tsb_theme')==='ivory'?'ivory':'forest';
+  let h='<header class="pg-head"><h1>設定</h1><p>人員、品項主檔、批號規則都在這裡，改了所有裝置立刻同步</p></header><h2>外觀主題</h2><div class="panel"><div class="themes"><button type="button" class="theme-opt" data-theme-set="forest" aria-pressed="'+(th==='forest')+'"><i style="background:linear-gradient(135deg,#08100C 55%,#F2B21A)"></i><b>森林綠（夜間）</b><small>深色底、蜂蜜金，適合現場與電視</small></button><button type="button" class="theme-opt" data-theme-set="ivory" aria-pressed="'+(th==='ivory')+'"><i style="background:linear-gradient(135deg,#F8F3E8 55%,#15213B)"></i><b>象牙金（明亮）</b><small>象牙白底、海軍藍字，適合辦公室</small></button></div></div><h2>人員名單</h2><div class="panel"><div class="chips" style="margin-bottom:12px">'+((c.people||[]).map((n,i)=>'<button class="chip" data-delp="'+i+'" title="移除">'+esc(n)+'　×</button>').join('')||'<span class="hint">還沒有人員，新增後在看板完成生產時可以點選。</span>')+'</div>'+
    '<div class="row"><input id="s-person" placeholder="輸入姓名" style="flex:1;min-width:160px"><button id="s-addp" class="primary">新增人員</button></div></div>';
   h+='<h2>匯入新高手銷貨紀錄</h2><div class="panel"><p class="hint" style="margin-top:0">從新高手匯出的 CSV 或 Excel 另存的 CSV。欄位順序：客戶名稱、品號、品名（或：客戶編號、客戶名稱、品號、品名）。重複匯入不會產生重複資料。</p>'+
    '<div class="row"><input id="s-imp" type="file" accept=".csv,text/csv" style="flex:1;min-width:200px"><button id="s-impgo" class="primary">匯入</button></div><div class="err" id="imperr"></div><div id="impres" class="hint"></div></div>';
@@ -1247,7 +1248,9 @@ async function runImport(){
   else $('#impres').textContent='';
 }
 $('#v-settings').addEventListener('click',async e=>{
-  const b=e.target.closest('button');if(!b)return;const c=JSON.parse(JSON.stringify(cfg()));c.people=c.people||[];c.varieties=c.varieties||{};
+  const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.themeSet){const t=b.dataset.themeSet;store.set('tsb_theme',t);if(t==='ivory')document.documentElement.setAttribute('data-theme','ivory');else document.documentElement.removeAttribute('data-theme');const m=document.querySelector('meta[name=theme-color]');if(m)m.content=t==='ivory'?'#F8F3E8':'#0A110E';return renderSettings()}
+  const c=JSON.parse(JSON.stringify(cfg()));c.people=c.people||[];c.varieties=c.varieties||{};
   const saveCfg=msg=>act(()=>api('PUT','/api/config',c),msg);
   if(b.id==='s-impgo'){b.focus();return runImport()}
   if(b.dataset.pbox){return openBoxEditor(+b.dataset.pbox)}
