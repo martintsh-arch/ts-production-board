@@ -1073,6 +1073,11 @@ html[data-theme="ivory"] .ak.bad b{color:#B3321F}
 html[data-theme="ivory"] .ak.warn b{color:#9A6500}
 html[data-theme="ivory"] .op-r b{color:#9A6500}
 html[data-theme="ivory"] .hex.h-bad .hl,html[data-theme="ivory"] .hex.h-bad .hs{color:#7A2414}
+
+/* numerals: crisp bold Barlow Condensed (Anton looked thin/blurry on some screens) */
+:root{--f-num:"Barlow Condensed","Noto Sans TC",sans-serif}
+.seq,.c-qty b,.c-ship b,.hex .hv,.seg b,.kp button,.bd-clock b,.bd-clock s,.card.next .c-qty b,.card.next .seq{font-family:var(--f-num);font-weight:700;letter-spacing:0;font-variant-numeric:tabular-nums lining-nums;-webkit-font-smoothing:auto;text-rendering:optimizeLegibility}
+.bd-clock b{font-weight:700;text-shadow:none}
 </style>
 </head>
 <body>
