@@ -5,12 +5,13 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0A110E">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
+<script>try{var __t=localStorage.getItem("tsb_theme");if(__t==="ivory")document.documentElement.setAttribute("data-theme","ivory")}catch(e){}</script>
 <title>統香生產看板</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2l12 7v14l-12 7-12-7V9z' fill='%23F2B33D'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@700;900&family=IBM+Plex+Mono:wght@500;600&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@700;900&family=IBM+Plex+Mono:wght@500;600&family=Anton&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
 /* 統香生產看板 — "honey refinery at night": one dark system, honey light as the only colour that glows. */
 :root{
@@ -910,6 +911,158 @@ body.tv .why{display:none}
 .dm-ws{list-style:none;display:flex;flex-direction:column;gap:6px;margin:10px 0}.dm-w{padding:9px 14px;border-radius:12px;font-size:14px;line-height:1.5;background:rgba(255,255,255,.05)}
 .dm-w.bad{background:rgba(255,90,78,.12);border:1px solid rgba(255,90,78,.5);color:#FF9A8E;font-weight:700}.dm-w.warn{background:rgba(255,176,32,.1);border:1px solid rgba(255,176,32,.45);color:#FFE2A8}.dm-w.info{background:rgba(90,200,255,.08);border:1px solid rgba(90,200,255,.35);color:#CFEFFF}
 @media (max-width:760px){.dmap{height:280px}.dm-sum b{font-size:18px}}
+
+/* ======================================================================
+   蜂巢旗艦 HIVE FLAGSHIP skin — layered over the base system.
+   Themes: forest (default dark) / ivory (light). Switch lives in 設定.
+   ====================================================================== */
+:root{
+  --f-num:"Anton","Barlow Condensed","Noto Sans TC",sans-serif;
+  --slab:linear-gradient(180deg,#FFE08A 0%,#F2B21A 52%,#D98A00 100%);
+  --slab-ink:#1A1405; --edge:#8F5E0B;
+  --glass:linear-gradient(160deg,rgba(24,40,32,.86),rgba(12,22,17,.9));
+  --hair:rgba(242,179,61,.28); --hair2:rgba(242,179,61,.55);
+  --cut:14px;
+}
+body{background-color:#08100C}
+/* — rail — */
+.top{background:linear-gradient(180deg,rgba(14,26,20,.98),rgba(7,13,10,.98));border-right:1px solid var(--hair);box-shadow:inset -1px 0 0 rgba(242,179,61,.06)}
+.brand b{font-family:var(--f-body);font-weight:900;letter-spacing:.3em;color:var(--honey-2)}
+.tabs button{border-radius:0;font-weight:700;letter-spacing:.12em}
+.tabs button[aria-selected="true"]{color:var(--slab-ink);background:var(--slab);clip-path:polygon(10px 0,100% 0,calc(100% - 10px) 100%,0 100%);border-bottom:3px solid var(--edge)}
+.tabs button[aria-selected="true"]::before{display:none}
+.tabs button[aria-selected="true"] svg{filter:none}
+/* — headings: skewed honey slab marker — */
+.pg-head h1,.bd-title h1{font-family:var(--f-body);font-weight:900;letter-spacing:.12em;display:flex;align-items:center;gap:16px}
+.pg-head h1::before,.bd-title h1::before{content:"";flex:none;width:12px;height:.95em;background:var(--slab);transform:skewX(-16deg);box-shadow:5px 0 0 rgba(242,179,61,.25),10px 0 0 rgba(242,179,61,.1)}
+h2{font-family:var(--f-body);font-weight:900;letter-spacing:.14em}
+h2::before{width:9px;height:1.05em;clip-path:none;background:var(--slab);transform:skewX(-16deg);box-shadow:4px 0 0 rgba(242,179,61,.22)}
+/* — surfaces: glass with honey hairlines — */
+.panel,.empty{background:var(--glass);border:1px solid var(--hair);border-radius:6px;backdrop-filter:blur(6px)}
+.panel{position:relative}
+.panel::before{content:"";position:absolute;left:-1px;top:-1px;width:44px;height:3px;background:var(--slab)}
+.card{background:var(--glass);border:1px solid var(--hair);border-radius:6px}
+.card::before{left:-1px;right:auto;top:-1px;width:64px;height:4px;background:var(--slab);transform-origin:left;clip-path:polygon(0 0,100% 0,calc(100% - 6px) 100%,0 100%)}
+.card.u-tom::before{background:linear-gradient(180deg,#B9D6FA,#5E8FD0)}
+.card.u-today::before{background:var(--slab)}
+.card.over{background:linear-gradient(165deg,rgba(60,22,14,.9),rgba(20,10,8,.92));border-color:rgba(255,107,78,.55)}
+.card.over::before{background:linear-gradient(180deg,#FF9A80,#E0402A);box-shadow:0 0 14px rgba(255,107,78,.7)}
+.seq{font-family:var(--f-num);font-weight:400;font-size:28px;color:var(--honey);letter-spacing:.04em}
+.cust{font-family:var(--f-body);font-weight:900;letter-spacing:.05em;color:var(--ink)}
+.c-qty b{font-family:var(--f-num);font-weight:400;letter-spacing:.01em;color:var(--honey-2)}
+.c-ship{border-radius:2px;clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%);padding-left:16px;padding-right:16px}
+.c-ship b{font-family:var(--f-num);font-weight:400}
+.next-tag,.urg-tag{border-radius:0;clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%);padding:3px 18px;background:var(--slab);color:var(--slab-ink);font-weight:900;box-shadow:none}
+/* — hero card (正在生產) — */
+.card.next{border-radius:4px;border:1px solid var(--hair2);clip-path:polygon(0 0,calc(100% - 34px) 0,100% 34px,100% 100%,34px 100%,0 calc(100% - 34px));
+  background:radial-gradient(760px 320px at 88% 120%,rgba(242,179,61,.22),transparent 62%),linear-gradient(155deg,rgba(30,48,38,.92),rgba(10,18,14,.96));box-shadow:none}
+.card.next::before{left:0;top:0;width:110px;height:6px}
+.card.next::after{border-radius:0}
+.card.next .seq{font-size:44px}
+.card.next .cust{font-size:clamp(36px,4.6vw,64px);font-weight:900;letter-spacing:.06em;text-shadow:none}
+.card.next .c-qty b{font-size:clamp(110px,12vw,190px);line-height:.88;background:linear-gradient(180deg,#FFF1C2 0%,#FFD25A 40%,#E59B0A 100%);-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:none;filter:drop-shadow(0 0 28px rgba(242,179,61,.32))}
+.card.next .c-qty span{font-weight:800;color:var(--honey-2)}
+/* — action buttons: slanted honey slabs — */
+.primary,.done-btn,.card.next .done-btn{border:0;border-bottom:5px solid var(--edge);border-radius:0;box-shadow:none;color:var(--slab-ink);font-weight:900;letter-spacing:.14em;background:var(--slab);clip-path:polygon(16px 0,100% 0,calc(100% - 16px) 100%,0 100%);padding-left:34px;padding-right:34px}
+.done-btn{min-height:60px}
+.done-btn::before{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231A1405' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12l5 5 9-10'/%3E%3C/svg%3E")}
+.card.next .done-btn{min-height:92px;font-size:26px;padding-left:64px;padding-right:64px}
+.primary:hover,.done-btn:hover{filter:brightness(1.07)}
+.primary:active,.done-btn:active,.card.next .done-btn:active{transform:translateY(3px);border-bottom-width:2px;box-shadow:none}
+.chip{border-radius:2px;clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%);padding-left:22px;padding-right:22px;background:rgba(255,255,255,.04);border-color:var(--hair)}
+.chip[aria-pressed="true"]{background:var(--slab);color:var(--slab-ink);box-shadow:none;border-color:transparent}
+button{border-radius:4px}
+input,select{border-radius:4px}
+/* — hive gauges: Anton numerals, honey rims — */
+.hex .hv{font-family:var(--f-num);font-weight:400;letter-spacing:.01em}
+.hex{background:linear-gradient(180deg,rgba(242,179,61,.75),rgba(242,179,61,.18))}
+.hex::after{background:linear-gradient(180deg,#14231B,#0A130F)}
+.hex.h-warn{background:linear-gradient(180deg,#FFD25A,#8A6410)}
+.hex.h-bad{background:linear-gradient(180deg,#FF8A70,#7A2414)}
+.hex.h-rate{background:linear-gradient(180deg,#FFE08A,#B97A10)}
+.hex .hl{font-weight:700;letter-spacing:.12em}
+.seg b,.kp button{font-family:var(--f-num);font-weight:400}
+/* — misc surfaces — */
+.ai-bar,.ticker{border-radius:4px}
+body.bd .ticker{border-radius:4px;border-color:var(--hair)}
+.tk-live{clip-path:polygon(0 0,100% 0,calc(100% - 12px) 100%,0 100%);padding-right:26px}
+.sheet{border-radius:6px;border:1px solid var(--hair2);background:var(--glass)}
+/* — completion: 任務完成 slash banner — */
+.vx{background:radial-gradient(900px 420px at 50% 48%,rgba(242,179,61,.16),rgba(4,9,6,.9) 62%),rgba(4,9,6,.88);backdrop-filter:blur(6px)}
+.vx-lines,.vx-star,.vx-stamp,.vx-flash{display:none}
+.vx-conf i{border-radius:0;background:var(--honey)!important;width:8px!important;height:22px!important;transform-origin:center}
+.vx-stage{gap:20px}
+.vx-big{font-family:var(--f-body);font-weight:900;font-size:clamp(56px,10vw,150px);letter-spacing:.14em;color:var(--slab-ink);padding:.06em .5em .1em;background:var(--slab);transform:skewX(-12deg);box-shadow:14px 14px 0 rgba(242,179,61,.18),0 0 90px rgba(242,179,61,.3);-webkit-text-stroke:0;text-shadow:none}
+.vx-big::before{display:none}
+.vx-tel{transform:skewX(-10deg);box-shadow:8px 8px 0 rgba(242,179,61,.18)}
+.vx-tel-k{background:#07100B;color:var(--honey-2);border:1px solid var(--hair2)}
+.vx-tel-t{background:linear-gradient(180deg,#FFF6DB,#F4DFA6);color:#1A1405}
+.vx-sub{background:rgba(7,14,10,.85);border:1px solid var(--hair);border-radius:2px;color:var(--ink)}
+.vx-lots span{background:transparent;color:var(--honey-2);border:1px solid var(--hair2);border-radius:0;box-shadow:none;transform:skewX(-10deg)}
+/* — theme switch (設定) — */
+.themes{display:flex;gap:14px;flex-wrap:wrap}
+.theme-opt{display:flex;flex-direction:column;align-items:stretch;gap:8px;width:210px;padding:12px;border-radius:4px;clip-path:none;text-align:left}
+.theme-opt i{display:block;height:58px;border-radius:2px;border:1px solid rgba(128,128,128,.35)}
+.theme-opt b{font-size:16px}.theme-opt small{color:var(--muted);font-size:12.5px}
+.theme-opt[aria-pressed="true"]{border-color:var(--honey);box-shadow:0 0 0 3px rgba(242,179,61,.25);background:var(--honey-wash)}
+
+/* ======================= ivory (light) theme ======================= */
+html[data-theme="ivory"]{
+  color-scheme:light;
+  --night:#F8F3E8; --bg:#F8F3E8; --panel:#FFFDF7; --surface:#FFFFFF; --sunk:#F1EADB; --raise:#FFFFFF; --line:#E4D9BE; --line2:#D2C39B;
+  --ink:#15213B; --muted:#55607A; --faint:#8A93A8;
+  --honey:#C98A00; --honey-2:#9A6500; --honey-deep:#8F5E0B; --honey-wash:rgba(201,138,0,.12);
+  --gold:#C98A00; --gold-soft:rgba(201,138,0,.14); --gold-ink:#7A4F00;
+  --leaf:#1F8F5F; --ok:#1F8F5F; --ok-soft:rgba(31,143,95,.12);
+  --ember:#C8412B; --red:#C8412B; --red-soft:rgba(200,65,43,.12);
+  --amber:#B87A00; --amber-soft:rgba(184,122,0,.12); --sky:#2F6FB5;
+  --glass:linear-gradient(160deg,rgba(255,255,255,.96),rgba(250,244,230,.96));
+  --hair:rgba(21,33,59,.16); --hair2:rgba(201,138,0,.6);
+}
+html[data-theme="ivory"] body{background-color:#F8F3E8;color:var(--ink);
+  background-image:radial-gradient(900px 520px at 100% -8%,rgba(242,179,61,.22),transparent 62%),radial-gradient(700px 500px at -10% 110%,rgba(21,33,59,.06),transparent 60%)}
+html[data-theme="ivory"] .top{background:linear-gradient(180deg,#15213B,#0D1630);border-right:0}
+html[data-theme="ivory"] .tabs button{color:#AEB8D0}
+html[data-theme="ivory"] .tabs button:hover{color:#fff;background:rgba(255,255,255,.06)}
+html[data-theme="ivory"] .brand b{color:#FFD47E}
+html[data-theme="ivory"] .card.next .c-qty b{background:linear-gradient(180deg,#F2B21A,#B97A10);-webkit-background-clip:text;background-clip:text}
+html[data-theme="ivory"] .card.next{background:radial-gradient(760px 320px at 88% 120%,rgba(242,179,61,.28),transparent 62%),linear-gradient(155deg,#FFFFFF,#FBF3DC)}
+html[data-theme="ivory"] .card.over{background:linear-gradient(165deg,#FFF1EC,#FFE6DE)}
+html[data-theme="ivory"] .card.urgent{background:linear-gradient(165deg,#FFE9E2,#FFD9CE)}
+html[data-theme="ivory"] .card.urgent .cust{color:#7A1A0A}
+html[data-theme="ivory"] .hex::after{background:linear-gradient(180deg,#FFFFFF,#F4ECD8)}
+html[data-theme="ivory"] .hex{background:linear-gradient(180deg,#D9A21E,#E9DDB8)}
+html[data-theme="ivory"] .hex.h-rate .hv,html[data-theme="ivory"] .hex.h-rate .hl{color:#1A1405}
+html[data-theme="ivory"] .hex .hl,html[data-theme="ivory"] .hex .hs{color:var(--muted)}
+html[data-theme="ivory"] body.bd .ticker{background:#FFFDF7}
+html[data-theme="ivory"] .tk-i{color:var(--ink)}
+html[data-theme="ivory"] .scrim{background:rgba(21,33,59,.45)}
+html[data-theme="ivory"] .vx{background:radial-gradient(900px 420px at 50% 48%,rgba(242,179,61,.3),rgba(248,243,232,.94) 62%),rgba(248,243,232,.94)}
+html[data-theme="ivory"] .vx-sub{background:#15213B;color:#fff}
+html[data-theme="ivory"] .vx-tel-k{background:#15213B;color:#FFD47E}
+html[data-theme="ivory"] .vx-lots span{color:#15213B;border-color:#15213B}
+
+/* ivory: darker counterparts for the pale status colours used by the dark theme */
+html[data-theme="ivory"] .top,html[data-theme="ivory"] .top *{--ink:#F4F6FB;--muted:#AEB8D0;--faint:#7C88A6}
+html[data-theme="ivory"] .top .top-r{color:#F4F6FB}
+html[data-theme="ivory"] .w-red,html[data-theme="ivory"] .op-late,html[data-theme="ivory"] .dm-w.bad,html[data-theme="ivory"] .dm-bad,html[data-theme="ivory"] .bad,html[data-theme="ivory"] .ad-st.bad,html[data-theme="ivory"] .eta.late,html[data-theme="ivory"] .alc-why,html[data-theme="ivory"] .ai-chip.c-warn,html[data-theme="ivory"] div.bad{color:#B3321F}
+html[data-theme="ivory"] .w-gold,html[data-theme="ivory"] .w-amb,html[data-theme="ivory"] .lock-tag,html[data-theme="ivory"] .ops-now,html[data-theme="ivory"] .ad-ln,html[data-theme="ivory"] .ad-tm,html[data-theme="ivory"] .sg-c.c-mid,html[data-theme="ivory"] summary,html[data-theme="ivory"] .ai-chip.c-route,html[data-theme="ivory"] .hold-tag,html[data-theme="ivory"] .status{color:#7A5200}
+html[data-theme="ivory"] .pill.m-own,html[data-theme="ivory"] .mchip.m-own,html[data-theme="ivory"] .ok{color:#17734C}
+html[data-theme="ivory"] .w-pur,html[data-theme="ivory"] .ai-chip.c-merge,html[data-theme="ivory"] .ai-go,html[data-theme="ivory"] .pill.m-log,html[data-theme="ivory"] .mchip.m-log{color:#5B3FC4}
+html[data-theme="ivory"] .pill.m-store,html[data-theme="ivory"] .mchip.m-store,html[data-theme="ivory"] .ai-chip.c-move,html[data-theme="ivory"] .dm-winbtn,html[data-theme="ivory"] .sg-a,html[data-theme="ivory"] .op-c i,html[data-theme="ivory"] .run-p i{color:#1F5FA8}
+html[data-theme="ivory"] .w-dim,html[data-theme="ivory"] .run-p,html[data-theme="ivory"] .ai-card p,html[data-theme="ivory"] .ai-tips,html[data-theme="ivory"] .aps-miss ul,html[data-theme="ivory"] .alc-opt,html[data-theme="ivory"] .ad-m span,html[data-theme="ivory"] .why span,html[data-theme="ivory"] .op-c span,html[data-theme="ivory"] .rule small,html[data-theme="ivory"] #v-aps small,html[data-theme="ivory"] #v-aps li{color:#3D4863}
+html[data-theme="ivory"] .why span{background:rgba(21,33,59,.07)}
+html[data-theme="ivory"] #v-aps i,html[data-theme="ivory"] #v-aps .dm-bad,html[data-theme="ivory"] #v-aps .dm-w.bad{color:#B3321F}
+html[data-theme="ivory"] #v-aps i{color:#1F5FA8}
+html[data-theme="ivory"] .rule-arr{color:#C98A00}
+html[data-theme="ivory"] .grip{color:#8A93A8}
+html[data-theme="ivory"] .ai-bar{background:linear-gradient(100deg,#F3EEFF,#EAF3FF);border-color:rgba(91,63,196,.3);color:var(--ink)}
+html[data-theme="ivory"] .ai-chip{background:rgba(21,33,59,.06)}
+html[data-theme="ivory"] #v-aps span,html[data-theme="ivory"] #v-aps div{--muted:#55607A}
+html[data-theme="ivory"] .ak.bad b{color:#B3321F}
+html[data-theme="ivory"] .ak.warn b{color:#9A6500}
+html[data-theme="ivory"] .op-r b{color:#9A6500}
+html[data-theme="ivory"] .hex.h-bad .hl,html[data-theme="ivory"] .hex.h-bad .hs{color:#7A2414}
 </style>
 </head>
 <body>
