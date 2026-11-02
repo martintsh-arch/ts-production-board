@@ -140,6 +140,22 @@ async function migrate() {
       last_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (customer, product_id)
     );
+    CREATE TABLE IF NOT EXISTS stock_moves (
+      id SERIAL PRIMARY KEY,
+      product_id INTEGER NOT NULL,
+      product_name TEXT NOT NULL DEFAULT '',
+      unit TEXT NOT NULL DEFAULT '',
+      lot TEXT NOT NULL DEFAULT '',
+      qty INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      task_id INTEGER,
+      customer TEXT NOT NULL DEFAULT '',
+      operator TEXT NOT NULL DEFAULT '',
+      note TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS stock_moves_pl ON stock_moves (product_id, lot);
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS from_stock BOOLEAN NOT NULL DEFAULT FALSE;
   `);
   await pool.query(
     `INSERT INTO config (id, data) VALUES (1, $1) ON CONFLICT (id) DO NOTHING`,
@@ -203,7 +219,7 @@ function rowTask(r) {
     completedAt: r.completed_at, operator: r.operator, matDate: r.mat_date, matArr: r.mat_arr,
     unit: r.unit || '', contents: r.contents || null, parentId: r.parent_id, lotHistory: r.lot_history, createdAt: r.created_at,
     urgent: !!r.urgent, urgentAt: r.urgent_at, shipMethod: r.ship_method || '',
-    locked: !!r.locked, startedAt: r.started_at || null, holdUntil: r.hold_until || null, holdReason: r.hold_reason || '',
+    fromStock: !!r.from_stock, locked: !!r.locked, startedAt: r.started_at || null, holdUntil: r.hold_until || null, holdReason: r.hold_reason || '',
   };
 }
 async function getConfig(client) {
@@ -240,7 +256,7 @@ app.get('/api/rev', wrap(async (req, res) => {
 }));
 
 app.get('/api/state', wrap(async (req, res) => {
-  const [rev, open, done, products, config, customers, history, recent] = await Promise.all([
+  const [rev, open, done, products, config, customers, history, stockBal, stockLog, recent] = await Promise.all([
     pool.query(`SELECT value FROM meta WHERE key = 'rev'`),
     pool.query(`SELECT * FROM tasks WHERE status = 'open' ORDER BY urgent DESC, urgent_at, sort_order, id`),
     pool.query(`SELECT * FROM tasks WHERE status = 'done' ORDER BY completed_at DESC LIMIT 2000`),
@@ -248,6 +264,8 @@ app.get('/api/state', wrap(async (req, res) => {
     getConfig(),
     pool.query(`SELECT id, name, code, address, lat, lng, address_suggest, suggest_src, suggest_conf, geo_precision, geo_tried_at, recv_open, recv_close, recv_lunch_from, recv_lunch_to FROM customers ORDER BY name`),
     pool.query(`SELECT customer, product_id, times FROM customer_products ORDER BY times DESC, last_at DESC`),
+    pool.query(`SELECT product_id, MAX(product_name) AS name, unit, lot, SUM(qty)::int AS qty, MAX(created_at) AS at FROM stock_moves GROUP BY product_id, unit, lot HAVING SUM(qty) > 0 ORDER BY MIN(created_at)`),
+    pool.query(`SELECT id, product_id, product_name, unit, lot, qty, kind, customer, operator, note, created_at FROM stock_moves ORDER BY id DESC LIMIT 40`),
     pool.query(`SELECT product_id, lot, MAX(completed_at) AS at FROM tasks
                 WHERE status='done' AND lot ~ '^[A-Z0-9]+-[A-Z]$' AND completed_at > now() - interval '400 days'
                 GROUP BY product_id, lot ORDER BY at DESC`),
@@ -269,6 +287,8 @@ app.get('/api/state', wrap(async (req, res) => {
     customers: customers.rows,
     history: history.rows.map((h) => [h.customer, h.product_id, h.times]),
     recentLots,
+    stock: stockBal.rows.map((r) => ({ productId: r.product_id, name: r.name, unit: r.unit, lot: r.lot, qty: r.qty, at: r.at })),
+    stockLog: stockLog.rows.map((r) => ({ id: r.id, productId: r.product_id, name: r.product_name, unit: r.unit, lot: r.lot, qty: r.qty, kind: r.kind, customer: r.customer, operator: r.operator, note: r.note, at: r.created_at })),
     config,
     now: taipeiParts(),
     plan, aps,
@@ -527,7 +547,7 @@ async function computeAps(db, given) {
 }
 const RUN_LABEL = [
   [/^\/tasks\/batch$/, '新增訂單'], [/^\/tasks\/\d+$/, '修改訂單'], [/\/void$/, '取消訂單'], [/\/urgent$/, '緊急插單'],
-  [/finish/, '完成生產'], [/^\/tasks\/reorder$/, '手動調整順序'], [/^\/plan\/apply$/, '套用智慧排程'], [/^\/plan\/auto$/, '切換自動排程'],
+  [/^\/stock\/use/, '庫存出貨'], [/^\/stock\/adjust/, '庫存調整'], [/finish/, '完成生產'], [/^\/tasks\/reorder$/, '手動調整順序'], [/^\/plan\/apply$/, '套用智慧排程'], [/^\/plan\/auto$/, '切換自動排程'],
   [/^\/plan\/undo/, '還原排程'], [/\/lock$/, '人工鎖定'], [/\/hold$/, '待料／缺料'], [/\/start$/, '開工'], [/^\/aps$/, '修改排程參數'], [/^\/delivery$/, '修改配送參數'], [/^\/customers\/window$/, '修改客戶收貨時間'],
 ];
 let runTimer = null, runReasons = [];
@@ -743,6 +763,15 @@ function lotPrefix(cfg, { cat, variety, matDate, matArr }) {
 }
 const LOT_RE = /^[A-Z0-9]{2,20}(-[A-Z0-9]{1,4})?$/;
 const NO_LOT = '無批號';
+// finished-goods stock: extra pieces made on top of an order go here, with the lot they were made under
+const parseExtra = (v) => Math.max(0, Math.min(100000, parseInt(v, 10) || 0));
+async function stockIn(client, t, lot, extra, operator) {
+  if (!extra) return;
+  await client.query(
+    `INSERT INTO stock_moves (product_id, product_name, unit, lot, qty, kind, task_id, customer, operator, note)
+     VALUES ($1,$2,$3,$4,$5,'make',$6,$7,$8,$9)`,
+    [t.product_id, t.product_name, t.unit || '', lot, extra, t.id, t.customer, operator, '多做轉庫存']);
+}
 const LOT_FMT = '批號格式不對（英文與數字，例如 HP101-A 或 HS0913B-F）';
 function isAuto(cfg, cat) { return !!(cfg.cats[cat] && cfg.cats[cat].auto); }
 // manual lot: pull material date / arrival letter out of it when it follows the syrup pattern
@@ -957,9 +986,10 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
           [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']);
       }
+      await stockIn(client, t, lotText, parseExtra(b.extra), operator);
       await bump(client);
       await client.query('COMMIT');
-      return res.json({ lot: lotText, lots: contents.map((c) => c.name + ' ' + c.lot), rest, box: true });
+      return res.json({ lot: lotText, lots: contents.map((c) => c.name + ' ' + c.lot), rest, box: true, extra: parseExtra(b.extra) });
     }
     if (b.noLot === true) {
       // packaging and other items that carry no lot number: finish without one
@@ -976,9 +1006,10 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
           [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']);
       }
       await client.query('UPDATE products SET no_lot=TRUE WHERE id=$1', [t.product_id]);
+      await stockIn(client, t, NO_LOT, parseExtra(b.extra), operator);
       await bump(client);
       await client.query('COMMIT');
-      return res.json({ lot: NO_LOT, lots: [NO_LOT + ' ×' + qty], rest, noLot: true });
+      return res.json({ lot: NO_LOT, lots: [NO_LOT + ' ×' + qty], rest, noLot: true, extra: parseExtra(b.extra) });
     }
     const total = parts.reduce((a, p) => a + (p.qty || 0), 0);
     if (parts.some((p) => !p.qty || p.qty < 1)) throw new UserError('每個批號的數量都要大於 0');
@@ -1042,9 +1073,74 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
         [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']
       );
     }
+    await stockIn(client, t, done.length ? done[done.length - 1].split(' ×')[0] : '', parseExtra(b.extra), operator);
     await bump(client);
     await client.query('COMMIT');
-    res.json({ lot: done.map((d) => d.split(' ×')[0]).join('、'), lots: done, rest });
+    res.json({ lot: done.map((d) => d.split(' ×')[0]).join('、'), lots: done, rest, extra: parseExtra(b.extra) });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+// ship an order from finished-goods stock instead of producing it
+app.post('/api/stock/use', wrap(async (req, res) => {
+  const b = req.body || {};
+  const operator = str(b.operator, 50);
+  if (!operator) throw new UserError('請先點選操作人');
+  const lot = str(b.lot, 60), qty = parseInt(b.qty, 10);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(`SELECT * FROM tasks WHERE id=$1 FOR UPDATE`, [parseInt(b.taskId, 10)]);
+    const t = rows[0];
+    if (!t || t.status !== 'open') throw new UserError('這筆已經完成或取消了，請重新整理');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['stock' + t.product_id]);
+    const bal = await client.query(
+      `SELECT COALESCE(SUM(qty),0)::int AS n FROM stock_moves WHERE product_id=$1 AND lot=$2 AND unit=$3`, [t.product_id, lot, t.unit || '']);
+    const have = bal.rows[0].n;
+    if (!qty || qty < 1) throw new UserError('數量要大於 0');
+    if (qty > t.qty) throw new UserError('超過訂單數量 ' + t.qty);
+    if (qty > have) throw new UserError('這個批號的庫存只有 ' + have);
+    await client.query(
+      `UPDATE tasks SET status='done', lot=$1, completed_at=now(), operator=$2, qty=$3, ordered_qty=COALESCE(ordered_qty, qty), from_stock=TRUE WHERE id=$4`,
+      [lot, operator, qty, t.id]);
+    await client.query(
+      `INSERT INTO stock_moves (product_id, product_name, unit, lot, qty, kind, task_id, customer, operator, note)
+       VALUES ($1,$2,$3,$4,$5,'use',$6,$7,$8,$9)`,
+      [t.product_id, t.product_name, t.unit || '', lot, -qty, t.id, t.customer, operator, '庫存出貨']);
+    const rest = t.qty - qty;
+    if (rest > 0) {
+      await client.query(
+        `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, sort_order, parent_id, unit)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']);
+    }
+    await bump(client);
+    await client.query('COMMIT');
+    res.json({ lot, rest });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+// stock count / scrap: signed adjustment with a reason
+app.post('/api/stock/adjust', wrap(async (req, res) => {
+  const b = req.body || {};
+  const operator = str(b.operator, 50), note = str(b.note, 100), lot = str(b.lot, 60), unit = str(b.unit, 10);
+  const delta = parseInt(b.delta, 10), pid = parseInt(b.productId, 10);
+  if (!operator) throw new UserError('請先點選操作人');
+  if (!delta || Math.abs(delta) > 100000) throw new UserError('請輸入要增減的數量（負數＝減少）');
+  if (!note) throw new UserError('請寫原因（例如：報廢、盤點差異）');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['stock' + pid]);
+    const pr = await client.query('SELECT name FROM products WHERE id=$1', [pid]);
+    if (!pr.rows[0]) throw new UserError('找不到這個品項');
+    const have = (await client.query(`SELECT COALESCE(SUM(qty),0)::int AS n FROM stock_moves WHERE product_id=$1 AND lot=$2 AND unit=$3`, [pid, lot, unit])).rows[0].n;
+    if (have + delta < 0) throw new UserError('庫存只有 ' + have + '，不能減到負數');
+    await client.query(
+      `INSERT INTO stock_moves (product_id, product_name, unit, lot, qty, kind, operator, note) VALUES ($1,$2,$3,$4,$5,'adjust',$6,$7)`,
+      [pid, pr.rows[0].name, unit, lot, delta, operator, note]);
+    await bump(client);
+    await client.query('COMMIT');
+    res.json({ ok: true });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
