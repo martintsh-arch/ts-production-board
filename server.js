@@ -1662,6 +1662,24 @@ app.put('/api/driver-settings', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 // pickup / logistics hand-off and re-dispatch
+// change the delivery method of an order that is already finished (e.g. 自取 -> 公司配送), so it can enter / leave the driver list
+app.post('/api/tasks/:id/method', wrap(async (req, res) => {
+  const b = req.body || {}, m = str(b.method, 8), id = parseInt(req.params.id, 10);
+  if (!SHIP_METHODS.includes(m)) throw new UserError('出貨方式只能是門市自取、公司配送或物流配送');
+  const { rows } = await pool.query(`SELECT customer, ship_date, status, delivery_status FROM tasks WHERE id=$1`, [id]);
+  const t = rows[0];
+  if (!t || t.status !== 'done') throw new UserError('只有已完成的訂單能用這個改；還沒完成的請用編輯');
+  if (['delivered', 'failed'].includes(t.delivery_status)) throw new UserError('這筆已經有配送結果了，不能再改');
+  const sib = b.siblings === false ? `AND id=$2` : `AND (id=$2 OR (customer=$3 AND ship_date=$4))`;
+  const { rowCount } = await pool.query(
+    `UPDATE tasks SET ship_method=$1, delivery_status='', trip_id=NULL, trip_driver='', stop_seq=NULL,
+       ship_date = CASE WHEN $1='公司配送' THEN GREATEST(ship_date, $5) ELSE ship_date END
+     WHERE status='done' AND delivery_status IN ('', 'legacy') ${sib}`,
+    [m, id, t.customer, t.ship_date, taipeiDate(new Date())]);
+  if (m === '公司配送') await saveAddress(t.customer, b.address);
+  await bump();
+  res.json({ ok: true, changed: rowCount });
+}));
 app.post('/api/deliveries/handoff', wrap(async (req, res) => {
   const b = req.body || {}, ids = idList(b), operator = str(b.operator, 20), note = str(b.note, 60);
   if (!ids.length) throw new UserError('沒有選到訂單');
