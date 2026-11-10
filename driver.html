@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0c1a14">
+<title>統香配送</title>
+<style>
+:root{--bg:#0c1a14;--card:#14271e;--line:#264236;--tx:#f3efe2;--mut:#9db3a6;--honey:#f2b33d;--ok:#4fc58a;--bad:#ff7a63;--f:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;--n:"Barlow Condensed","Arial Narrow",system-ui,sans-serif}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--f);font-size:17px;line-height:1.45}
+body{padding:0 16px calc(96px + env(safe-area-inset-bottom));max-width:560px;margin:0 auto}
+button{font:inherit;color:inherit;border:1.5px solid var(--line);background:var(--card);border-radius:14px;min-height:56px;padding:10px 18px;cursor:pointer}
+button:active{transform:scale(.98)}
+button:disabled{opacity:.5}
+input{font:inherit;color:inherit;background:#0a140f;border:1.5px solid var(--line);border-radius:12px;min-height:56px;padding:10px 14px;width:100%}
+h1{font-size:22px;margin:0}
+header{position:sticky;top:0;background:var(--bg);padding:14px 0 10px;z-index:5;border-bottom:1px solid var(--line);margin-bottom:12px}
+.hrow{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.sub{color:var(--mut);font-size:14px}
+.prog{height:8px;background:#0a140f;border-radius:6px;overflow:hidden;margin-top:10px}
+.prog i{display:block;height:100%;background:var(--ok);transition:width .3s}
+.num{font-family:var(--n);font-weight:700;letter-spacing:.02em}
+.chips{display:flex;gap:10px;flex-wrap:wrap}
+.chip{flex:1;min-width:120px;font-size:20px;font-weight:700}
+.chip[aria-pressed=true]{background:var(--honey);color:#1a1608;border-color:var(--honey)}
+.stop{background:var(--card);border:1.5px solid var(--line);border-radius:18px;padding:16px;margin:0 0 14px}
+.stop.done{opacity:.6}
+.stop.next{border-color:var(--honey);box-shadow:0 0 0 1px var(--honey) inset}
+.stop.bad{border-color:var(--bad)}
+.top{display:flex;gap:12px;align-items:flex-start}
+.seq{font-family:var(--n);font-weight:700;font-size:36px;line-height:1;color:var(--honey);min-width:34px}
+.name{font-size:22px;font-weight:800;line-height:1.25}
+.addr{color:var(--mut);font-size:15px;margin-top:2px}
+.tag{display:inline-block;font-size:13px;padding:2px 9px;border-radius:99px;border:1px solid var(--line);color:var(--mut);margin:6px 6px 0 0}
+.tag.warn{color:var(--bad);border-color:var(--bad)}.tag.ok{color:var(--ok);border-color:var(--ok)}.tag.eta{color:var(--honey);border-color:var(--honey)}
+.items{margin:12px 0 4px;border-top:1px dashed var(--line)}
+.it{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line);font-size:16px}
+.it b{font-family:var(--n);font-size:24px;white-space:nowrap}
+.it.wait{color:var(--bad)}
+.it small{display:block;color:var(--mut);font-size:13px}
+.acts{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.acts .nav{grid-column:1/-1}
+.go{background:var(--ok);color:#06210f;border-color:var(--ok);font-weight:800;font-size:20px;min-height:64px}
+.nav{text-decoration:none;display:flex;align-items:center;justify-content:center;border:1.5px solid var(--honey);color:var(--honey);border-radius:14px;min-height:56px;font-weight:700}
+.warnb{background:#3a1d17;border:1px solid var(--bad);color:#ffd7cf;border-radius:12px;padding:10px 14px;margin:0 0 12px;font-size:15px}
+.infob{background:#102c20;border:1px solid var(--line);color:var(--mut);border-radius:12px;padding:10px 14px;margin:0 0 12px;font-size:15px}
+.bar{position:fixed;left:0;right:0;bottom:0;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:linear-gradient(transparent,var(--bg) 30%);}
+.bar .in{max-width:560px;margin:0 auto}
+.depart{width:100%;min-height:64px;font-size:20px;font-weight:800;background:var(--honey);color:#1a1608;border-color:var(--honey)}
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:flex-end;justify-content:center;z-index:20}
+.sheet{background:var(--card);border-radius:22px 22px 0 0;padding:20px 16px calc(20px + env(safe-area-inset-bottom));width:100%;max-width:560px;max-height:92vh;overflow:auto}
+.sheet h2{margin:0 0 4px;font-size:22px}
+.reasons{display:grid;gap:10px;margin:14px 0}
+.toast{position:fixed;left:16px;right:16px;bottom:calc(90px + env(safe-area-inset-bottom));max-width:528px;margin:0 auto;background:#1c3a2c;border:1px solid var(--ok);border-radius:14px;padding:12px 16px;z-index:30;display:flex;gap:12px;align-items:center;justify-content:space-between}
+.toast button{min-height:44px;padding:4px 14px}
+.empty{text-align:center;color:var(--mut);padding:50px 10px}
+.pend{background:var(--bad);color:#2a0b05;border-radius:99px;padding:2px 10px;font-size:13px;font-weight:700}
+.cold{color:var(--mut);text-align:center;padding:40px 0}
+.section{color:var(--mut);font-size:14px;margin:18px 0 8px;letter-spacing:.1em}
+.err{color:var(--bad);min-height:22px;margin:8px 0;font-size:15px}
+</style>
+</head>
+<body>
+<div id="app"><div class="cold">載入中…第一次開啟可能要等半分鐘</div></div>
+<div id="modal"></div><div id="toast"></div>
+<script>
+(()=>{
+const $=s=>document.querySelector(s);
+const LS={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}},del(k){try{localStorage.removeItem(k)}catch(e){}}};
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let PIN=LS.get('tsb_dpin')||'',DRV=LS.get('tsb_driver')||'',D=null,ERR='',BUSY=false,Q=[];
+try{Q=JSON.parse(LS.get('tsb_dq')||'[]')}catch(e){Q=[]}
+let lastUndo=null;
+const saveQ=()=>LS.set('tsb_dq',JSON.stringify(Q));
+async function api(m,p,b){
+  const r=await fetch('/driver-api'+p,{method:m,headers:{'content-type':'application/json','x-driver-pin':PIN},body:b?JSON.stringify(b):undefined});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok){const e=new Error(j.error||('錯誤 '+r.status));e.status=r.status;e.code=j.error;throw e}
+  return j;
+}
+const hm=iso=>{const d=new Date(iso);return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')};
+const nav=s=>{const q=(s.lat!=null&&s.lng!=null)?s.lat+','+s.lng:s.address;return q?'https://www.google.com/maps/dir/?api=1&travelmode=driving&destination='+encodeURIComponent(q):''};
+async function flush(){
+  if(!Q.length)return;
+  while(Q.length){
+    const a=Q[0];
+    try{await api('POST',a.path,a.body);Q.shift();saveQ()}
+    catch(e){if(e.status===400){Q.shift();saveQ();continue}if(e.status===401||e.status===403)return;return}
+  }
+}
+async function load(){
+  try{
+    await flush();
+    D=await api('GET','/today');ERR='';
+    // apply queued-but-unsent actions on screen so nothing looks undone while offline
+    Q.forEach(a=>{D.stops.forEach(s=>{if(a.body.taskIds.some(id=>s.items.some(i=>i.id===id))){s.status=a.path==='/done'?'delivered':'failed';s.doneAt=a.body.at;s.by=a.body.driver}})});
+  }catch(e){
+    if(e.status===401||e.code==='pin'){LS.del('tsb_dpin');PIN='';ERR='密碼不對'}
+    else if(e.status===403){ERR='尚未設定司機密碼，請聯絡辦公室'}
+    else if(e.status===429){ERR=e.message}
+    else if(!D)ERR='連不上系統，請確認網路後重試';
+  }
+  render();
+}
+function pinScreen(){
+  return '<header><h1>統香配送</h1></header><div class="sec"><p class="sub">請輸入司機密碼</p><input id="pin" type="password" inputmode="text" autocomplete="off" placeholder="司機密碼"><div class="err">'+esc(ERR)+'</div><button class="go" id="pinok" style="width:100%">進入</button></div>';
+}
+function whoScreen(){
+  return '<header><h1>統香配送</h1><div class="sub">今天是哪一位司機？</div></header><div class="chips">'+(D.drivers||[]).map(n=>'<button class="chip" data-who="'+esc(n)+'">'+esc(n)+'</button>').join('')+'</div>';
+}
+function stopHTML(s,idx,nextIdx){
+  const cls='stop'+(s.status==='delivered'?' done':'')+(s.status==='failed'?' bad':'')+(idx===nextIdx?' next':'');
+  const tags=[];
+  if(s.status==='delivered')tags.push('<span class="tag ok">已送達 '+esc(s.doneAt?hm(s.doneAt):'')+'・'+esc(s.by)+'</span>');
+  else if(s.status==='failed')tags.push('<span class="tag warn">異常：'+esc(s.issue)+'</span>');
+  else{
+    if(!s.ready)tags.push('<span class="tag warn">貨還沒做完</span>');
+    if(s.eta)tags.push('<span class="tag eta">預計 '+esc(s.eta)+' 到</span>');
+    if(s.win)tags.push('<span class="tag">收貨 '+esc(s.win.open)+'–'+esc(s.win.close)+(s.win.lunchFrom?'（午休 '+esc(s.win.lunchFrom)+'–'+esc(s.win.lunchTo)+'）':'')+'</span>');
+  }
+  let h='<div class="'+cls+'"><div class="top"><div class="seq">'+(s.status==='pending'?(idx+1):(s.status==='delivered'?'✓':'!'))+'</div><div style="flex:1;min-width:0"><div class="name">'+esc(s.customer)+'</div><div class="addr">'+(esc(s.address)||'<span style="color:var(--bad)">沒有地址，請打給辦公室</span>')+'</div>'+tags.join('')+'</div></div>';
+  h+='<div class="items">'+s.items.map(i=>'<div class="it'+(i.ready?'':' wait')+'"><span>'+esc(i.name)+(i.lot?'<small>'+esc(i.lot)+'</small>':'')+(i.note?'<small>備註：'+esc(i.note)+'</small>':'')+(i.ready?'':'<small>尚未完工</small>')+'</span><b>'+esc(i.qty)+'<span style="font-size:15px;font-family:var(--f)"> '+esc(i.unit)+'</span></b></div>').join('')+'</div>';
+  if(s.status==='pending'){
+    const u=nav(s);
+    h+='<div class="acts">'+(u?'<a class="nav" href="'+esc(u)+'" target="_blank" rel="noopener">導航</a>':'')+'<button class="go" data-done="'+idx+'"'+(s.ready?'':' disabled')+'>已送達</button><button data-fail="'+idx+'"'+(s.ready?'':' disabled')+'>異常</button></div>';
+  }
+  return h+'</div>';
+}
+function render(){
+  const app=$('#app');
+  if(!PIN){app.innerHTML=pinScreen();return}
+  if(!D){app.innerHTML=ERR?'<div class="empty">'+esc(ERR)+'<br><br><button id="retry">重試</button></div>':'<div class="cold">載入中…第一次開啟可能要等半分鐘</div>';return}
+  if(!DRV||!(D.drivers||[]).includes(DRV)){app.innerHTML=whoScreen();return}
+  const st=D.stops,pend=st.filter(s=>s.status==='pending'),done=st.filter(s=>s.status!=='pending');
+  const total=st.length,fin=st.filter(s=>s.status==='delivered').length;
+  const ready=pend.filter(s=>s.ready),waiting=pend.filter(s=>!s.ready);
+  const trip=D.trip;
+  let h='<header><div class="hrow"><div><h1>今日配送</h1><div class="sub">'+esc(D.date.slice(5).replace('-','/'))+'・'+esc(DRV)+' <a href="#" id="chg" style="color:var(--honey)">換人</a></div></div><div style="text-align:right"><span class="num" style="font-size:34px">'+fin+'</span><span class="sub"> / '+total+' 站</span>'+(Q.length?'<div><span class="pend">'+Q.length+' 筆待上傳</span></div>':'')+'</div></div><div class="prog"><i style="width:'+(total?Math.round(fin/total*100):0)+'%"></i></div></header>';
+  if(ERR)h+='<div class="warnb">'+esc(ERR)+'</div>';
+  if(!st.length)h+='<div class="empty">今天沒有公司配送的單</div>';
+  if(trip&&pend.length)h+='<div class="infob">'+esc(trip.driver)+' '+hm(trip.departedAt)+' 已出發</div>';
+  let n=0;
+  pend.filter(s=>s.ready).forEach(s=>{h+=stopHTML(s,n++,0)});
+  if(waiting.length){h+='<div class="section">還沒做完的貨（完工後才能送）</div>';waiting.forEach(s=>{h+=stopHTML(s,n++,-1)})}
+  if(done.length){h+='<div class="section">已處理</div>';done.forEach((s,i)=>{h+=stopHTML(s,i,-1)})}
+  app.innerHTML=h;
+  const bar=ready.length&&!trip?'<div class="bar"><div class="in"><button class="depart" id="depart">裝車完成，出發（'+ready.length+' 站）</button></div></div>':'';
+  $('#toast').innerHTML=(lastUndo?'<div class="toast"><span>'+esc(lastUndo.label)+'</span><button id="undo">撤銷</button></div>':'')+bar;
+}
+function showSheet(html){$('#modal').innerHTML='<div class="scrim" id="scrim"><div class="sheet">'+html+'</div></div>'}
+function stopsByIdx(i){const pend=D.stops.filter(s=>s.status==='pending');return pend.filter(s=>s.ready).concat(pend.filter(s=>!s.ready))[i]}
+async function act(path,body,label,stop){
+  const b={...body,driver:DRV,at:new Date().toISOString()};
+  // optimistic
+  stop.status=path==='/done'?'delivered':'failed';stop.doneAt=b.at;stop.by=DRV;stop.issue=b.issue||'';
+  lastUndo={label:label,ids:b.taskIds,t:Date.now()};setTimeout(()=>{if(lastUndo&&lastUndo.ids===b.taskIds){lastUndo=null;render()}},15*60000);
+  render();
+  try{await api('POST',path,b)}
+  catch(e){
+    if(e.status===400){ERR=e.message;lastUndo=null;await load();return}
+    Q.push({path,body:b});saveQ();ERR='網路不穩，已先記下，恢復連線會自動上傳';render();return;
+  }
+  load();
+}
+document.addEventListener('click',async e=>{
+  const t=e.target.closest('button,a');if(!t)return;
+  if(t.id==='pinok'){const v=$('#pin').value.trim();if(!v)return;PIN=v;LS.set('tsb_dpin',v);D=null;ERR='';render();return load()}
+  if(t.id==='retry'){ERR='';return load()}
+  if(t.dataset.who){DRV=t.dataset.who;LS.set('tsb_driver',DRV);return render()}
+  if(t.id==='chg'){e.preventDefault();DRV='';LS.del('tsb_driver');return render()}
+  if(t.id==='depart'){
+    if(BUSY)return;BUSY=true;t.disabled=true;
+    try{await api('POST','/depart',{driver:DRV});ERR=''}catch(er){ERR=er.message}
+    BUSY=false;return load();
+  }
+  if(t.dataset.done!==undefined){const s=stopsByIdx(+t.dataset.done);if(!s)return;
+    showSheet('<h2>'+esc(s.customer)+'</h2><div class="sub">確認已送達？貨品 '+s.items.length+' 項</div><div class="acts" style="margin-top:16px"><button id="x">取消</button><button class="go" id="okdone" data-i="'+t.dataset.done+'">確認已送達</button></div>');return}
+  if(t.id==='okdone'){const s=stopsByIdx(+t.dataset.i);$('#modal').innerHTML='';if(s)act('/done',{taskIds:s.items.map(i=>i.id)},s.customer+' 已送達',s);return}
+  if(t.dataset.fail!==undefined){const s=stopsByIdx(+t.dataset.fail);if(!s)return;
+    showSheet('<h2>'+esc(s.customer)+'</h2><div class="sub">這一站發生什麼事？</div><div class="reasons">'+D.reasons.map(r=>'<button data-reason="'+esc(r)+'" data-i="'+t.dataset.fail+'" style="font-size:19px">'+esc(r)+'</button>').join('')+'</div><button id="x" style="width:100%">取消</button>');return}
+  if(t.dataset.reason){const s=stopsByIdx(+t.dataset.i);$('#modal').innerHTML='';if(s)act('/fail',{taskIds:s.items.map(i=>i.id),issue:t.dataset.reason},s.customer+' 回報：'+t.dataset.reason,s);return}
+  if(t.id==='x'){$('#modal').innerHTML='';return}
+  if(t.id==='undo'&&lastUndo){const u=lastUndo;lastUndo=null;
+    try{await api('POST','/undo',{taskIds:u.ids});ERR=''}catch(er){ERR=er.message}
+    return load()}
+});
+document.addEventListener('click',e=>{if(e.target.id==='scrim')$('#modal').innerHTML=''});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&PIN)load()});
+window.addEventListener('online',()=>{if(PIN)load()});
+setInterval(()=>{if(PIN&&!document.hidden&&!$('.scrim'))load()},20000);
+render();if(PIN)load();
+})();
+</script>
+</body>
+</html>
