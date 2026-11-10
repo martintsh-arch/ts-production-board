@@ -156,11 +156,25 @@ async function migrate() {
     );
     CREATE INDEX IF NOT EXISTS stock_moves_pl ON stock_moves (product_id, lot);
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS from_stock BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS use_stock BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS delivery_at TIMESTAMPTZ;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS delivered_by TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS delivery_issue TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS trip_id INTEGER;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS stop_seq INTEGER;
+    CREATE TABLE IF NOT EXISTS trips (id SERIAL PRIMARY KEY, driver TEXT NOT NULL, ship_date TEXT NOT NULL, departed_at TIMESTAMPTZ NOT NULL DEFAULT now());
   `);
   await pool.query(
     `INSERT INTO config (id, data) VALUES (1, $1) ON CONFLICT (id) DO NOTHING`,
     [JSON.stringify(DEFAULT_CONFIG)]
   );
+  { // delivery tracking: orders finished before this feature existed are "legacy" (not shown as undelivered)
+    const { rows: has } = await pool.query(`SELECT 1 FROM information_schema.columns WHERE table_name='tasks' AND column_name='delivery_status'`);
+    if (!has.length) {
+      await pool.query(`ALTER TABLE tasks ADD COLUMN delivery_status TEXT NOT NULL DEFAULT ''`);
+      await pool.query(`UPDATE tasks SET delivery_status='legacy' WHERE status IN ('done','void')`);
+    }
+  }
   await pool.query(`INSERT INTO meta (key, value) VALUES ('rev', 1) ON CONFLICT (key) DO NOTHING`);
   // v2 lot mode: manual lot entry by default; 果樂茶 J and 玫瑰蜜露 R are locked to system-generated lots
   const cfg = await getConfig();
@@ -219,7 +233,7 @@ function rowTask(r) {
     completedAt: r.completed_at, operator: r.operator, matDate: r.mat_date, matArr: r.mat_arr,
     unit: r.unit || '', contents: r.contents || null, parentId: r.parent_id, lotHistory: r.lot_history, createdAt: r.created_at,
     urgent: !!r.urgent, urgentAt: r.urgent_at, shipMethod: r.ship_method || '',
-    fromStock: !!r.from_stock, locked: !!r.locked, startedAt: r.started_at || null, holdUntil: r.hold_until || null, holdReason: r.hold_reason || '',
+    deliveryStatus: r.delivery_status || '', deliveryAt: r.delivery_at || null, deliveredBy: r.delivered_by || '', deliveryIssue: r.delivery_issue || '', tripId: r.trip_id || null, fromStock: !!r.from_stock, useStock: !!r.use_stock, locked: !!r.locked, startedAt: r.started_at || null, holdUntil: r.hold_until || null, holdReason: r.hold_reason || '',
   };
 }
 async function getConfig(client) {
@@ -289,7 +303,7 @@ app.get('/api/state', wrap(async (req, res) => {
     recentLots,
     stock: stockBal.rows.map((r) => ({ productId: r.product_id, name: r.name, unit: r.unit, lot: r.lot, qty: r.qty, at: r.at })),
     stockLog: stockLog.rows.map((r) => ({ id: r.id, productId: r.product_id, name: r.product_name, unit: r.unit, lot: r.lot, qty: r.qty, kind: r.kind, customer: r.customer, operator: r.operator, note: r.note, at: r.created_at })),
-    config,
+    config: (({ driverPin, ...c }) => ({ ...c, driverPinSet: !!driverPin, drivers: driversOf(c) }))(config),
     now: taipeiParts(),
     plan, aps,
     runs: (await pool.query(`SELECT id, at, reason, summary FROM plan_runs ORDER BY id DESC LIMIT 30`)).rows.map((r) => ({ id: r.id, at: r.at, reason: r.reason, diff: r.summary.diff, late: r.summary.late, overload: r.summary.overload, undo: !!r.summary.undo })),
@@ -303,6 +317,7 @@ function readiness(d, tasks, aps, dcfg, nowMin) {
   if (aps && aps.tasks) {
     let unknown = 0;
     tasks.forEach((t) => {
+      if (t.use_stock) return;
       const p = aps.tasks[t.id];
       if (!p || !p.day || !p.line || (p.flags || []).includes('工時未知')) { unknown++; return; }
       if (p.day > d) { late.push({ customer: t.customer, day: p.day }); return; }
@@ -541,7 +556,7 @@ async function computeAps(db, given) {
   const tp = taipeiParts();
   const learned = APS.learnRates(done);
   const addr = {}; customers.forEach((c) => { addr[c.name] = c.address || ''; });
-  const sch = APS.schedule(open, { aps: cfg.aps, today: tp.y + '-' + tp.m + '-' + tp.d, nowMin: nowMinTW(), customers: addr, learned });
+  const sch = APS.schedule(open.filter((t) => !t.use_stock), { aps: cfg.aps, today: tp.y + '-' + tp.m + '-' + tp.d, nowMin: nowMinTW(), customers: addr, learned });
   sch.learned = learned;
   return sch;
 }
@@ -619,6 +634,14 @@ async function geoTick() {
 
 /* orders */
 const UNITS = ['桶', '箱', '瓶'];
+/* free stock = ledger balance minus what other open "use stock" orders have already claimed */
+async function stockFree(db, productId, unit, excludeId) {
+  const { rows } = await db.query(
+    `SELECT (SELECT COALESCE(SUM(qty),0) FROM stock_moves WHERE product_id=$1 AND unit=$2)
+          - (SELECT COALESCE(SUM(qty),0) FROM tasks WHERE status='open' AND use_stock AND product_id=$1 AND unit=$2 AND id<>$3) AS free`,
+    [productId, unit || '', excludeId || 0]);
+  return Number(rows[0].free);
+}
 const SHIP_METHODS = ['門市自取', '公司配送', '物流配送'];
 async function readOrderBody(b) {
   const customer = str(b.customer, 100);
@@ -636,7 +659,7 @@ async function readOrderBody(b) {
   if (!isDate(shipDate)) throw new UserError('請選擇出貨日');
   const { rows } = await pool.query('SELECT * FROM products WHERE id = $1', [productId]);
   if (!rows[0]) throw new UserError('找不到這個品項');
-  return { customer, product: rows[0], qty, shipDate, note, unit, shipMethod };
+  return { customer, product: rows[0], qty, shipDate, note, unit, shipMethod, useStock: b.useStock === true };
 }
 
 async function rememberPurchase(customer, productId) {
@@ -668,7 +691,7 @@ app.post('/api/tasks/batch', wrap(async (req, res) => {
   const orders = [];
   for (let i = 0; i < items.length; i++) {
     try {
-      orders.push(await readOrderBody({ customer: b.customer, shipDate: b.shipDate, note: b.note, shipMethod: b.shipMethod, ...items[i] }));
+      orders.push(await readOrderBody({ customer: b.customer, shipDate: b.shipDate, note: b.note, shipMethod: b.shipMethod, ...items[i], useStock: items[i].useStock === true }));
     } catch (e) {
       if (e instanceof UserError) throw new UserError('第 ' + (i + 1) + ' 行：' + e.message);
       throw e;
@@ -683,10 +706,13 @@ app.post('/api/tasks/batch', wrap(async (req, res) => {
     for (const o of orders) {
       order += 10;
       const { rows: ins } = await client.query(
-        `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, unit, sort_order, urgent, urgent_at, ship_method)
-         VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,CASE WHEN $11 THEN now() END,$12) RETURNING id`,
-        [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, o.unit, order, urgent, o.shipMethod]);
+        `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, unit, sort_order, urgent, urgent_at, ship_method, use_stock)
+         VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,CASE WHEN $11 THEN now() END,$12,$13) RETURNING id`,
+        [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, o.unit, order, urgent, o.shipMethod, o.useStock]);
       o.id = ins[0].id;
+    }
+    for (const o of orders.filter((x) => x.useStock)) {
+      if (await stockFree(client, o.product.id, o.unit) < 0) throw new UserError(o.product.name + ' 的庫存不夠（扣掉其他訂單已預留的）');
     }
     await bump(client);
     await client.query('COMMIT');
@@ -700,10 +726,11 @@ app.post('/api/tasks/batch', wrap(async (req, res) => {
 
 app.put('/api/tasks/:id', wrap(async (req, res) => {
   const o = await readOrderBody(req.body || {});
+  if (o.useStock && await stockFree(pool, o.product.id, o.unit, +req.params.id) < o.qty) throw new UserError('庫存不夠（扣掉其他訂單已預留的），這張單請改成現做');
   const { rowCount } = await pool.query(
-    `UPDATE tasks SET customer=$1, product_id=$2, product_name=$3, cat=$4, variety=$5, qty=$6, ordered_qty=$6, ship_date=$7, note=$8, unit=$10, ship_method=$11
+    `UPDATE tasks SET customer=$1, product_id=$2, product_name=$3, cat=$4, variety=$5, qty=$6, ordered_qty=$6, ship_date=$7, note=$8, unit=$10, ship_method=$11, use_stock=$12
      WHERE id=$9 AND status='open'`,
-    [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, req.params.id, o.unit, o.shipMethod]
+    [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, req.params.id, o.unit, o.shipMethod, o.useStock]
   );
   if (!rowCount) throw new UserError('這筆訂單已完成或已取消，無法修改');
   if (o.shipMethod === '公司配送') await saveAddress(o.customer, (req.body || {}).address);
@@ -1109,9 +1136,9 @@ app.post('/api/stock/use', wrap(async (req, res) => {
     const rest = t.qty - qty;
     if (rest > 0) {
       await client.query(
-        `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, sort_order, parent_id, unit)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-        [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']);
+        `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, sort_order, parent_id, unit, use_stock)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '', !!t.use_stock]);
     }
     await bump(client);
     await client.query('COMMIT');
@@ -1378,6 +1405,9 @@ app.put('/api/config', wrap(async (req, res) => {
   for (const [k, v] of Object.entries(c.cats)) {
     if (!/^[A-Z]$/.test(k) || !v || !v.name || !['month', 'material'].includes(v.rule)) throw new UserError('類別設定格式不對：' + k);
   }
+  const cur = await getConfig();
+  delete c.driverPinSet;
+  if (cur.driverPin) c.driverPin = cur.driverPin; else delete c.driverPin;
   await pool.query(`UPDATE config SET data=$1 WHERE id=1`, [JSON.stringify(c)]);
   await bump();
   res.json({ ok: true });
@@ -1401,6 +1431,152 @@ app.get('/api/export.csv', wrap(async (req, res) => {
 /* static */
 app.get('/vendor/Sortable.min.js', (req, res) =>
   res.sendFile(require.resolve('sortablejs/Sortable.min.js')));
+/* ---------- delivery: driver page + delivery tracking (company truck) ---------- */
+const DRIVERS_DEFAULT = ['陳宏安', '陳宏仲'];
+const FAIL_REASONS = ['客戶不在', '拒收', '地址找不到', '其他'];
+const driverFails = new Map();
+const driversOf = (cfg) => (Array.isArray(cfg && cfg.drivers) && cfg.drivers.length ? cfg.drivers : DRIVERS_DEFAULT);
+function sameStr(a, b) { a = String(a || ''); b = String(b || ''); let d = a.length ^ b.length; for (let i = 0; i < Math.max(a.length, b.length); i++) d |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0); return d === 0; }
+const dAuth = (req, res, next) => (async () => {
+  const ip = req.ip || 'x', f = driverFails.get(ip);
+  if (f && f.n >= 8 && Date.now() - f.t < 10 * 60 * 1000) return res.status(429).json({ error: '輸入錯誤太多次，請 10 分鐘後再試' });
+  const cfg = await getConfig();
+  if (!cfg.driverPin) return res.status(403).json({ error: 'nopin' });
+  if (!sameStr(req.get('x-driver-pin'), cfg.driverPin)) {
+    driverFails.set(ip, { n: (f && Date.now() - f.t < 10 * 60 * 1000 ? f.n : 0) + 1, t: Date.now() });
+    return res.status(401).json({ error: 'pin' });
+  }
+  driverFails.delete(ip); req.cfg = cfg; next();
+})().catch((e) => { console.error(e); res.status(500).json({ error: '伺服器錯誤，請稍後再試' }); });
+const dRoute = (m, p, fn) => app[m]('/driver-api' + p, (req, res, next) => dAuth(req, res, () => wrap(fn)(req, res)));
+const isoOr = (v, max) => { const t = new Date(v); const now = Date.now(); return !v || isNaN(t) || t.getTime() > now + 120000 || t.getTime() < now - (max || 48) * 3600000 ? new Date() : t; };
+
+async function driverToday(cfg) {
+  const td = taipeiDate(new Date());
+  const { rows } = await pool.query(
+    `SELECT * FROM tasks WHERE ship_method='公司配送' AND (
+        (status='open' AND ship_date <= $1)
+     OR (status='done' AND delivery_status='' AND ship_date <= $1)
+     OR (status='done' AND delivery_status IN ('delivered','failed') AND delivery_at >= $2::timestamptz))
+     ORDER BY id`, [td, td + 'T00:00:00+08:00']);
+  const { rows: cu } = await pool.query(`SELECT name, address, lat, lng, recv_open, recv_close, recv_lunch_from, recv_lunch_to FROM customers`);
+  const crow = {}; cu.forEach((c) => { crow[c.name] = c; });
+  // planned order: best route over everything going out today (open or already produced)
+  const live = rows.filter((t) => t.delivery_status === '' || t.delivery_status == null);
+  const planned = {};
+  try {
+    const sp = smartPlan(live.map((t) => ({ ...t, status: 'open' })), cu, cfg, { aps: null, legs: legsGet, nowMin: nowMinTW(), need: [] });
+    const r = (sp.routes || []).find((x) => x.date === td);
+    if (r) { (r.points || []).forEach((p, i) => { planned[p.name] = { i, eta: DEL.hm(p.arrive) }; }); }
+  } catch (e) { console.error('driver plan', e.message); }
+  const by = {};
+  rows.forEach((t) => { (by[t.customer] = by[t.customer] || []).push(t); });
+  const stops = Object.keys(by).map((name) => {
+    const ts = by[name], c = crow[name] || {};
+    const st = ts.every((t) => t.delivery_status === 'delivered') ? 'delivered' : ts.some((t) => t.delivery_status === 'failed') && ts.every((t) => t.delivery_status !== '' && t.delivery_status != null) ? 'failed' : 'pending';
+    const seq = ts.map((t) => t.stop_seq).filter((x) => x != null);
+    const frozen = seq.length ? Math.min(...seq) : null;
+    return {
+      customer: name, address: c.address || '', lat: c.lat, lng: c.lng,
+      win: c.recv_open ? { open: c.recv_open, close: c.recv_close, lunchFrom: c.recv_lunch_from, lunchTo: c.recv_lunch_to } : null,
+      status: st, ready: ts.every((t) => t.status === 'done'),
+      items: ts.map((t) => ({ id: t.id, name: t.product_name, qty: t.qty, unit: t.unit || '', lot: t.status === 'done' ? t.lot : '', ready: t.status === 'done', note: t.note || '', status: t.delivery_status || '', issue: t.delivery_issue || '' })),
+      doneAt: ts.map((t) => t.delivery_at).filter(Boolean).sort().pop() || null,
+      by: (ts.find((t) => t.delivered_by) || {}).delivered_by || '',
+      issue: (ts.find((t) => t.delivery_issue) || {}).delivery_issue || '',
+      seq: frozen != null ? frozen : (planned[name] ? 1000 + planned[name].i : 5000),
+      eta: planned[name] ? planned[name].eta : '', frozen: frozen != null,
+    };
+  });
+  stops.sort((a, b) => (a.status === 'pending' ? 0 : 1) - (b.status === 'pending' ? 0 : 1) || a.seq - b.seq || a.customer.localeCompare(b.customer, 'zh-Hant'));
+  const { rows: tr } = await pool.query(`SELECT * FROM trips WHERE ship_date=$1 ORDER BY id DESC LIMIT 1`, [td]);
+  return { date: td, drivers: driversOf(cfg), reasons: FAIL_REASONS, stops, trip: tr[0] ? { id: tr[0].id, driver: tr[0].driver, departedAt: tr[0].departed_at } : null, now: new Date().toISOString() };
+}
+app.get('/driver', (req, res) => res.sendFile(path.join(__dirname, 'driver.html')));
+dRoute('get', '/today', async (req, res) => res.json(await driverToday(req.cfg)));
+dRoute('post', '/depart', async (req, res) => {
+  const driver = str((req.body || {}).driver, 20);
+  if (!driversOf(req.cfg).includes(driver)) throw new UserError('請先選擇司機');
+  const d = await driverToday(req.cfg), go = d.stops.filter((s) => s.status === 'pending' && s.ready);
+  if (!go.length) throw new UserError('目前沒有已完工、可以出發的貨');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(`INSERT INTO trips (driver, ship_date) VALUES ($1,$2) RETURNING id`, [driver, d.date]);
+    let seq = 1;
+    for (const s of go) {
+      await client.query(`UPDATE tasks SET trip_id=$1, stop_seq=$2 WHERE id = ANY($3::int[])`, [rows[0].id, seq++, s.items.map((i) => i.id)]);
+    }
+    await bump(client);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+  res.json(await driverToday(req.cfg));
+});
+const idList = (b) => (Array.isArray(b && b.taskIds) ? b.taskIds : []).map((x) => parseInt(x, 10)).filter(Boolean).slice(0, 50);
+dRoute('post', '/done', async (req, res) => {
+  const b = req.body || {}, driver = str(b.driver, 20), ids = idList(b);
+  if (!driversOf(req.cfg).includes(driver)) throw new UserError('請先選擇司機');
+  if (!ids.length) throw new UserError('沒有要完成的貨');
+  const { rows } = await pool.query(`SELECT id, status, delivery_status FROM tasks WHERE id = ANY($1::int[]) AND ship_method='公司配送'`, [ids]);
+  if (rows.some((t) => t.status !== 'done')) throw new UserError('有貨還沒完成生產，不能標已送達');
+  await pool.query(
+    `UPDATE tasks SET delivery_status='delivered', delivery_at=$3, delivered_by=$2, delivery_issue=''
+     WHERE id = ANY($1::int[]) AND status='done' AND delivery_status <> 'delivered'`, [ids, driver, isoOr(b.at)]);
+  await bump();
+  res.json({ ok: true });
+});
+dRoute('post', '/fail', async (req, res) => {
+  const b = req.body || {}, driver = str(b.driver, 20), ids = idList(b), issue = str(b.issue, 40);
+  if (!driversOf(req.cfg).includes(driver)) throw new UserError('請先選擇司機');
+  if (!ids.length) throw new UserError('沒有要回報的貨');
+  if (!FAIL_REASONS.includes(issue)) throw new UserError('請選擇異常原因');
+  await pool.query(
+    `UPDATE tasks SET delivery_status='failed', delivery_at=$3, delivered_by=$2, delivery_issue=$4
+     WHERE id = ANY($1::int[]) AND status='done' AND ship_method='公司配送' AND delivery_status <> 'delivered'`, [ids, driver, isoOr(b.at), issue + (b.note ? '：' + str(b.note, 80) : '')]);
+  await bump();
+  res.json({ ok: true });
+});
+dRoute('post', '/undo', async (req, res) => {
+  const b = req.body || {}, ids = idList(b);
+  if (!ids.length) throw new UserError('沒有要撤銷的貨');
+  const { rowCount } = await pool.query(
+    `UPDATE tasks SET delivery_status='', delivery_at=NULL, delivered_by='', delivery_issue=''
+     WHERE id = ANY($1::int[]) AND ship_method='公司配送' AND delivery_status IN ('delivered','failed') AND delivery_at > now() - interval '15 minutes'`, [ids]);
+  if (!rowCount) throw new UserError('超過 15 分鐘，無法撤銷，請聯絡辦公室');
+  await bump();
+  res.json({ ok: true });
+});
+
+// office side
+app.put('/api/driver-settings', wrap(async (req, res) => {
+  const b = req.body || {}, cur = await getConfig();
+  const pin = str(b.pin, 20), drivers = Array.isArray(b.drivers) ? b.drivers.map((x) => str(x, 20)).filter(Boolean).slice(0, 10) : null;
+  if (b.pin !== undefined && pin && pin.length < 4) throw new UserError('司機密碼至少 4 碼');
+  const next = { ...cur, ...(pin ? { driverPin: pin } : {}), ...(drivers && drivers.length ? { drivers } : {}) };
+  await pool.query(`UPDATE config SET data=$1 WHERE id=1`, [JSON.stringify(next)]);
+  await bump();
+  res.json({ ok: true });
+}));
+// pickup / logistics hand-off and re-dispatch
+app.post('/api/deliveries/handoff', wrap(async (req, res) => {
+  const b = req.body || {}, ids = idList(b), operator = str(b.operator, 20), note = str(b.note, 60);
+  if (!ids.length) throw new UserError('沒有選到訂單');
+  await pool.query(
+    `UPDATE tasks SET delivery_status='delivered', delivery_at=now(), delivered_by=$2, delivery_issue=$3
+     WHERE id = ANY($1::int[]) AND status='done' AND ship_method <> '公司配送' AND delivery_status=''`, [ids, operator, note]);
+  await bump();
+  res.json({ ok: true });
+}));
+app.post('/api/deliveries/reopen', wrap(async (req, res) => {
+  const ids = idList(req.body);
+  if (!ids.length) throw new UserError('沒有選到訂單');
+  await pool.query(
+    `UPDATE tasks SET delivery_status='', delivery_at=NULL, delivered_by='', delivery_issue='', trip_id=NULL, stop_seq=NULL, ship_date = GREATEST(ship_date, $2)
+     WHERE id = ANY($1::int[]) AND status='done' AND delivery_status IN ('failed','delivered')`, [ids, taipeiDate(new Date())]);
+  await bump();
+  res.json({ ok: true });
+}));
+
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/app.js', (req, res) => res.sendFile(path.join(__dirname, 'app.js')));
 
