@@ -1426,11 +1426,34 @@ function renderRecords(){
   if(!S.done.length)h+='<div class="empty"><b>還沒有生產紀錄</b>在看板上按「完成生產」後，紀錄會出現在這裡，可以用批號回查。</div>';
   else h+='<p class="hint">共 '+rows.length+' 筆</p><div class="tbl-wrap"><table><thead><tr><th>完成時間</th><th>批號</th><th>品項</th><th>數量</th><th>客戶</th><th>出貨日</th><th>出貨方式</th><th>操作人</th><th></th></tr></thead><tbody>'+rows.map(t=>
    '<tr><td class="mono">'+fmtTime(t.completedAt)+'</td><td class="lotcell">'+(t.contents?t.contents.map(c=>'<div><span class="stamp sm">'+esc(c.lot)+'</span> <span class="hint" style="font-family:var(--f-body);font-weight:400">'+esc(shortName(c.name))+'　'+esc(c.date.slice(5).replace('-','/'))+'</span></div>').join(''):(t.shipLots&&t.shipLots.length?t.shipLots.map(x=>'<div><span class="stamp sm">'+esc(x.lot)+'</span> <span class="hint" style="font-family:var(--f-body);font-weight:400">×'+num(x.qty)+'　'+(x.expiry?'效期 '+esc(x.expiry.replace(/-/g,'/')):'效期未填')+'</span></div>').join(''):'<span class="stamp">'+esc(t.lot)+'</span>'))+(t.lotHistory&&t.lotHistory.length?'<div class="hint">曾修改 '+t.lotHistory.length+' 次</div>':'')+'</td><td>'+esc(t.productName)+'</td><td class="mono">'+qtyU(t)+(t.orderedQty&&t.orderedQty!==t.qty?'<div class="hint">訂單 '+num(t.orderedQty)+'</div>':'')+'</td><td>'+esc(t.customer)+'</td><td class="mono">'+esc(t.shipDate)+'</td><td>'+(t.shipMethod?methodPill(t):'<span class="hint">—</span>')+'</td><td>'+esc(t.operator)+'</td>'+
-   '<td>'+(t.contents?'<span class="pill p-box">禮盒</span>':'<button data-rlot="'+t.id+'">改批號</button>')+'</td></tr>').join('')+'</tbody></table></div>';
+   '<td>'+(t.contents?'<span class="pill p-box">禮盒</span>':'<button data-rlot="'+t.id+'">改批號</button>')+(t.deliveryStatus==='delivered'||t.deliveryStatus==='failed'?'':' <button data-rmeth="'+t.id+'">改出貨方式</button>')+'</td></tr>').join('')+'</tbody></table></div>';
   v.innerHTML=h;
 }
 $('#v-records').addEventListener('input',e=>{if(e.target.id==='rq'){S.q=e.target.value;const pos=e.target.selectionStart;renderRecords();const n=$('#rq');n.focus();n.setSelectionRange(pos,pos)}});
-$('#v-records').addEventListener('click',e=>{const b=e.target.closest('button[data-rlot]');if(!b)return;const t=S.done.find(x=>x.id===+b.dataset.rlot);if(t)openLotEdit(t)});
+let MM=null;
+function drawMeth(){
+  if(!MM)return;const t=MM.t,sibs=S.done.filter(x=>x.id!==t.id&&x.customer===t.customer&&x.shipDate===t.shipDate&&(x.deliveryStatus===''||x.deliveryStatus==='legacy')).length;
+  $('#modal').innerHTML='<div class="scrim" id="mscrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="改出貨方式">'+
+    '<div class="sheet-h"><div class="cust"><span class="cust-tag">改出貨方式</span>'+esc(t.customer)+'</div><div class="pname">'+esc(shortName(t.productName))+' <span class="mono">× '+qtyU(t)+'</span>　出貨日 '+esc(t.shipDate)+'</div></div>'+
+    '<div class="sec"><div class="lbl"><i class="sn">1</i>出貨方式</div><div class="chips">'+METHODS.map(m=>'<button type="button" class="chip" data-mm="'+m+'" aria-pressed="'+(MM.m===m)+'">'+m+'</button>').join('')+'</div></div>'+
+    (MM.m==='公司配送'?'<div class="sec"><label class="lbl" for="m-addr"><i class="sn">2</i>送貨地址</label><input id="m-addr" autocomplete="off" value="'+esc(MM.addr)+'" placeholder="司機導航用"></div>':'')+
+    (sibs?'<label class="hint" style="display:flex;gap:8px;align-items:center;margin:6px 0"><input type="checkbox" id="m-sib"'+(MM.sib?' checked':'')+' style="width:22px;height:22px">同客戶、同出貨日還有 '+sibs+' 筆已完成的單，一起改</label>':'')+
+    '<div class="hint">改成「公司配送」後，這筆會出現在司機頁的「可以帶走的貨」；改成其他方式會從司機頁移除。</div>'+
+    '<div class="err">'+esc(MM.err)+'</div><div class="row"><button type="button" id="mcancel" style="flex:1">取消</button><button type="button" id="mok" class="primary" style="flex:2;min-height:60px;font-size:18px"'+(MM.busy?' disabled':'')+'>'+(MM.busy?'儲存中…':'確認')+'</button></div></div></div>';
+}
+$('#modal').addEventListener('input',e=>{if(!MM)return;if(e.target.id==='m-addr')MM.addr=e.target.value;else if(e.target.id==='m-sib')MM.sib=e.target.checked});
+$('#modal').addEventListener('click',async e=>{
+  if(!MM)return;
+  if(e.target.id==='mscrim'||e.target.id==='mcancel'){MM=null;$('#modal').innerHTML='';return}
+  const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.mm){MM.m=b.dataset.mm;MM.err='';return drawMeth()}
+  if(b.id!=='mok')return;
+  if(MM.m==='公司配送'&&!MM.addr.trim()){MM.err='請填送貨地址';return drawMeth()}
+  MM.busy=true;drawMeth();
+  try{const r=await api('POST','/api/tasks/'+MM.t.id+'/method',{method:MM.m,address:MM.addr.trim(),siblings:MM.sib});MM=null;$('#modal').innerHTML='';toast('已改，共 '+r.changed+' 筆');await refresh(true);render(true)}
+  catch(er){if(MM){MM.busy=false;MM.err=er.message;drawMeth()}}
+});
+$('#v-records').addEventListener('click',e=>{const mb=e.target.closest('button[data-rmeth]');if(mb){const t=S.done.find(x=>x.id===+mb.dataset.rmeth);if(t){const c=S.customers.find(x=>x.name===t.customer);MM={t,m:t.shipMethod||'公司配送',addr:(c&&c.address)||'',sib:true,err:'',busy:false};drawMeth()}return}const b=e.target.closest('button[data-rlot]');if(!b)return;const t=S.done.find(x=>x.id===+b.dataset.rlot);if(t)openLotEdit(t)});
 function openLotEdit(t){
   $('#modal').innerHTML='<div class="scrim" id="lscrim"><form class="sheet" id="lform" role="dialog" aria-modal="true" aria-label="修改批號"><div class="pname">修改批號</div><div class="hint">'+esc(t.productName)+' × '+qtyU(t)+'　'+esc(t.customer)+'</div>'+
   '<label class="f" for="lnew">新批號<input id="lnew" class="mono" autocomplete="off" style="font-size:24px;text-transform:uppercase" value="'+esc(t.lot)+'"></label>'+
