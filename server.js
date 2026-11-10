@@ -155,6 +155,8 @@ async function migrate() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS stock_moves_pl ON stock_moves (product_id, lot);
+    ALTER TABLE stock_moves ADD COLUMN IF NOT EXISTS expiry TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ship_lots JSONB NOT NULL DEFAULT '[]';
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS from_stock BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS use_stock BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS delivery_at TIMESTAMPTZ;
@@ -232,7 +234,7 @@ const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 
 function rowTask(r) {
   return {
-    id: r.id, customer: r.customer, productId: r.product_id, productName: r.product_name,
+    id: r.id, customer: r.customer, productId: r.product_id, productName: r.product_name, shipLots: r.ship_lots || [],
     cat: r.cat, variety: r.variety, qty: r.qty, orderedQty: r.ordered_qty, shipDate: r.ship_date,
     note: r.note, status: r.status, order: r.sort_order, lot: r.lot,
     completedAt: r.completed_at, operator: r.operator, matDate: r.mat_date, matArr: r.mat_arr,
@@ -283,8 +285,8 @@ app.get('/api/state', wrap(async (req, res) => {
     getConfig(),
     pool.query(`SELECT id, name, code, address, lat, lng, address_suggest, suggest_src, suggest_conf, geo_precision, geo_tried_at, recv_open, recv_close, recv_lunch_from, recv_lunch_to FROM customers ORDER BY name`),
     pool.query(`SELECT customer, product_id, times FROM customer_products ORDER BY times DESC, last_at DESC`),
-    pool.query(`SELECT product_id, MAX(product_name) AS name, unit, lot, SUM(qty)::int AS qty, MAX(created_at) AS at FROM stock_moves GROUP BY product_id, unit, lot HAVING SUM(qty) > 0 ORDER BY MIN(created_at)`),
-    pool.query(`SELECT id, product_id, product_name, unit, lot, qty, kind, customer, operator, note, created_at FROM stock_moves ORDER BY id DESC LIMIT 40`),
+    pool.query(`SELECT product_id, MAX(product_name) AS name, unit, lot, expiry, SUM(qty)::int AS qty, MAX(created_at) AS at FROM stock_moves GROUP BY product_id, unit, lot, expiry HAVING SUM(qty) > 0 ORDER BY (expiry = ''), expiry, MIN(created_at)`),
+    pool.query(`SELECT id, product_id, product_name, unit, lot, expiry, qty, kind, customer, operator, note, created_at FROM stock_moves ORDER BY id DESC LIMIT 40`),
     pool.query(`SELECT product_id, lot, MAX(completed_at) AS at FROM tasks
                 WHERE status='done' AND lot ~ '^[A-Z0-9]+-[A-Z]$' AND completed_at > now() - interval '400 days'
                 GROUP BY product_id, lot ORDER BY at DESC`),
@@ -306,8 +308,8 @@ app.get('/api/state', wrap(async (req, res) => {
     customers: customers.rows,
     history: history.rows.map((h) => [h.customer, h.product_id, h.times]),
     recentLots,
-    stock: stockBal.rows.map((r) => ({ productId: r.product_id, name: r.name, unit: r.unit, lot: r.lot, qty: r.qty, at: r.at })),
-    stockLog: stockLog.rows.map((r) => ({ id: r.id, productId: r.product_id, name: r.product_name, unit: r.unit, lot: r.lot, qty: r.qty, kind: r.kind, customer: r.customer, operator: r.operator, note: r.note, at: r.created_at })),
+    stock: stockBal.rows.map((r) => ({ productId: r.product_id, name: r.name, unit: r.unit, lot: r.lot, expiry: r.expiry || '', qty: r.qty, at: r.at })),
+    stockLog: stockLog.rows.map((r) => ({ id: r.id, productId: r.product_id, name: r.product_name, unit: r.unit, lot: r.lot, expiry: r.expiry || '', qty: r.qty, kind: r.kind, customer: r.customer, operator: r.operator, note: r.note, at: r.created_at })),
     config: (({ driverPin, ...c }) => ({ ...c, driverPinSet: !!driverPin, drivers: driversOf(c) }))(config),
     now: taipeiParts(),
     plan, aps,
@@ -797,12 +799,18 @@ const LOT_RE = /^[A-Z0-9]{2,20}(-[A-Z0-9]{1,4})?$/;
 const NO_LOT = '無批號';
 // finished-goods stock: extra pieces made on top of an order go here, with the lot they were made under
 const parseExtra = (v) => Math.max(0, Math.min(100000, parseInt(v, 10) || 0));
-async function stockIn(client, t, lot, extra, operator) {
+function extraExpiry(b) {
+  if (!parseExtra(b.extra)) return '';
+  const e = str(b.extraExpiry, 10);
+  if (!isDate(e)) throw new UserError('多做的數量要填有效日期');
+  return e;
+}
+async function stockIn(client, t, lot, extra, operator, expiry) {
   if (!extra) return;
   await client.query(
-    `INSERT INTO stock_moves (product_id, product_name, unit, lot, qty, kind, task_id, customer, operator, note)
-     VALUES ($1,$2,$3,$4,$5,'make',$6,$7,$8,$9)`,
-    [t.product_id, t.product_name, t.unit || '', lot, extra, t.id, t.customer, operator, '多做轉庫存']);
+    `INSERT INTO stock_moves (product_id, product_name, unit, lot, expiry, qty, kind, task_id, customer, operator, note)
+     VALUES ($1,$2,$3,$4,$5,$6,'make',$7,$8,$9,$10)`,
+    [t.product_id, t.product_name, t.unit || '', lot, expiry || '', extra, t.id, t.customer, operator, '多做轉庫存']);
 }
 const LOT_FMT = '批號格式不對（英文與數字，例如 HP101-A 或 HS0913B-F）';
 function isAuto(cfg, cat) { return !!(cfg.cats[cat] && cfg.cats[cat].auto); }
@@ -1018,7 +1026,7 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
           [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']);
       }
-      await stockIn(client, t, lotText, parseExtra(b.extra), operator);
+      await stockIn(client, t, lotText, parseExtra(b.extra), operator, extraExpiry(b));
       await bump(client);
       await client.query('COMMIT');
       return res.json({ lot: lotText, lots: contents.map((c) => c.name + ' ' + c.lot), rest, box: true, extra: parseExtra(b.extra) });
@@ -1038,7 +1046,7 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
           [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']);
       }
       await client.query('UPDATE products SET no_lot=TRUE WHERE id=$1', [t.product_id]);
-      await stockIn(client, t, NO_LOT, parseExtra(b.extra), operator);
+      await stockIn(client, t, NO_LOT, parseExtra(b.extra), operator, extraExpiry(b));
       await bump(client);
       await client.query('COMMIT');
       return res.json({ lot: NO_LOT, lots: [NO_LOT + ' ×' + qty], rest, noLot: true, extra: parseExtra(b.extra) });
@@ -1105,19 +1113,21 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
         [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']
       );
     }
-    await stockIn(client, t, done.length ? done[done.length - 1].split(' ×')[0] : '', parseExtra(b.extra), operator);
+    await stockIn(client, t, done.length ? done[done.length - 1].split(' ×')[0] : '', parseExtra(b.extra), operator, extraExpiry(b));
     await bump(client);
     await client.query('COMMIT');
     res.json({ lot: done.map((d) => d.split(' ×')[0]).join('、'), lots: done, rest, extra: parseExtra(b.extra) });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
-// ship an order from finished-goods stock instead of producing it
+// ship an order from finished-goods stock instead of producing it; one or several batches (lot + expiry), each deducted separately
 app.post('/api/stock/use', wrap(async (req, res) => {
   const b = req.body || {};
   const operator = str(b.operator, 50);
   if (!operator) throw new UserError('請先點選操作人');
-  const lot = str(b.lot, 60), qty = parseInt(b.qty, 10);
+  let want = (Array.isArray(b.allocations) ? b.allocations : []).map((a) => ({ lot: str(a.lot, 60), expiry: a.expiry == null ? null : str(a.expiry, 10), qty: parseInt(a.qty, 10) }));
+  if (!want.length && b.lot) want = [{ lot: str(b.lot, 60), expiry: b.expiry == null ? null : str(b.expiry, 10), qty: parseInt(b.qty, 10) }]; // older page: one lot
+  if (!want.length || want.length > 20) throw new UserError('請選擇要出貨的批次');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1125,20 +1135,35 @@ app.post('/api/stock/use', wrap(async (req, res) => {
     const t = rows[0];
     if (!t || t.status !== 'open') throw new UserError('這筆已經完成或取消了，請重新整理');
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['stock' + t.product_id]);
-    const bal = await client.query(
-      `SELECT COALESCE(SUM(qty),0)::int AS n FROM stock_moves WHERE product_id=$1 AND lot=$2 AND unit=$3`, [t.product_id, lot, t.unit || '']);
-    const have = bal.rows[0].n;
-    if (!qty || qty < 1) throw new UserError('數量要大於 0');
-    if (qty > t.qty) throw new UserError('超過訂單數量 ' + t.qty);
-    if (qty > have) throw new UserError('這個批號的庫存只有 ' + have);
+    const { rows: bals } = await client.query(
+      `SELECT lot, expiry, SUM(qty)::int AS n FROM stock_moves WHERE product_id=$1 AND unit=$2 GROUP BY lot, expiry HAVING SUM(qty) > 0 ORDER BY (expiry = ''), expiry, MIN(created_at)`, [t.product_id, t.unit || '']);
+    const take = new Map(); // "lot|expiry" -> qty
+    const addTake = (lot, expiry, q) => { const k = lot + '|' + expiry; take.set(k, (take.get(k) || 0) + q); };
+    for (const w of want) {
+      if (!w.qty || w.qty < 1) throw new UserError('每個批次的數量要大於 0');
+      if (w.expiry != null) { addTake(w.lot, w.expiry, w.qty); continue; }
+      let left = w.qty; // no expiry given: draw from that lot, earliest expiry first
+      for (const r of bals.filter((x) => x.lot === w.lot)) { const q = Math.min(left, r.n - (take.get(r.lot + '|' + r.expiry) || 0)); if (q > 0) { addTake(r.lot, r.expiry, q); left -= q; } }
+      if (left > 0) throw new UserError('批號 ' + w.lot + ' 的庫存不夠');
+    }
+    let total = 0; const ship = [];
+    for (const [k, q] of take) {
+      const [lot, expiry] = [k.slice(0, k.lastIndexOf('|')), k.slice(k.lastIndexOf('|') + 1)];
+      const have = (bals.find((x) => x.lot === lot && x.expiry === expiry) || { n: 0 }).n;
+      if (q > have) throw new UserError('批號 ' + lot + (expiry ? '（效期 ' + expiry + '）' : '') + ' 的庫存只有 ' + have);
+      total += q; ship.push({ lot, expiry, qty: q });
+    }
+    if (total > t.qty) throw new UserError('合計 ' + total + ' 超過訂單數量 ' + t.qty);
     await client.query(
-      `UPDATE tasks SET status='done', lot=$1, completed_at=now(), operator=$2, qty=$3, ordered_qty=COALESCE(ordered_qty, qty), from_stock=TRUE WHERE id=$4`,
-      [lot, operator, qty, t.id]);
-    await client.query(
-      `INSERT INTO stock_moves (product_id, product_name, unit, lot, qty, kind, task_id, customer, operator, note)
-       VALUES ($1,$2,$3,$4,$5,'use',$6,$7,$8,$9)`,
-      [t.product_id, t.product_name, t.unit || '', lot, -qty, t.id, t.customer, operator, '庫存出貨']);
-    const rest = t.qty - qty;
+      `UPDATE tasks SET status='done', lot=$1, completed_at=now(), operator=$2, qty=$3, ordered_qty=COALESCE(ordered_qty, qty), from_stock=TRUE, ship_lots=$4 WHERE id=$5`,
+      [[...new Set(ship.map((x) => x.lot))].join('、'), operator, total, JSON.stringify(ship), t.id]);
+    for (const x of ship) {
+      await client.query(
+        `INSERT INTO stock_moves (product_id, product_name, unit, lot, expiry, qty, kind, task_id, customer, operator, note)
+         VALUES ($1,$2,$3,$4,$5,$6,'use',$7,$8,$9,$10)`,
+        [t.product_id, t.product_name, t.unit || '', x.lot, x.expiry, -x.qty, t.id, t.customer, operator, '庫存出貨']);
+    }
+    const rest = t.qty - total;
     if (rest > 0) {
       await client.query(
         `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, sort_order, parent_id, unit, use_stock)
@@ -1147,14 +1172,56 @@ app.post('/api/stock/use', wrap(async (req, res) => {
     }
     await bump(client);
     await client.query('COMMIT');
-    res.json({ lot, rest });
+    res.json({ lot: [...new Set(ship.map((x) => x.lot))].join('、'), lots: ship, rest });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+// put finished goods into stock directly: product, lot, expiry date and the quantity actually received
+app.post('/api/stock/in', wrap(async (req, res) => {
+  const b = req.body || {};
+  const operator = str(b.operator, 50), unit = str(b.unit, 10), lot = str(b.lot, 60).toUpperCase().replace(/\s/g, ''), expiry = str(b.expiry, 10);
+  const qty = parseInt(b.qty, 10), pid = parseInt(b.productId, 10);
+  if (!operator) throw new UserError('請先點選操作人');
+  if (!(lot === NO_LOT || LOT_RE.test(lot))) throw new UserError('請填批號：英文與數字，例如 HP101-A（沒有批號請填「無批號」）');
+  if (!isDate(expiry)) throw new UserError('請選擇有效日期');
+  if (!qty || qty < 1 || qty > 100000) throw new UserError('入庫數量要大於 0');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['stock' + pid]);
+    const pr = await client.query('SELECT name FROM products WHERE id=$1', [pid]);
+    if (!pr.rows[0]) throw new UserError('找不到這個品項');
+    await client.query(
+      `INSERT INTO stock_moves (product_id, product_name, unit, lot, expiry, qty, kind, operator, note) VALUES ($1,$2,$3,$4,$5,$6,'make',$7,$8)`,
+      [pid, pr.rows[0].name, unit, lot, expiry, qty, operator, str(b.note, 100) || '直接入庫']);
+    await bump(client);
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+// fill in / correct the expiry date of an existing batch
+app.post('/api/stock/expiry', wrap(async (req, res) => {
+  const b = req.body || {};
+  const operator = str(b.operator, 50), lot = str(b.lot, 60), unit = str(b.unit, 10), from = str(b.from, 10), expiry = str(b.expiry, 10), pid = parseInt(b.productId, 10);
+  if (!operator) throw new UserError('請先點選操作人');
+  if (!isDate(expiry)) throw new UserError('請選擇有效日期');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['stock' + pid]);
+    const { rowCount } = await client.query(`UPDATE stock_moves SET expiry=$1 WHERE product_id=$2 AND unit=$3 AND lot=$4 AND expiry=$5`, [expiry, pid, unit, lot, from]);
+    if (!rowCount) throw new UserError('找不到這個批次，請重新整理');
+    await bump(client);
+    await client.query('COMMIT');
+    res.json({ ok: true });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
 // stock count / scrap: signed adjustment with a reason
 app.post('/api/stock/adjust', wrap(async (req, res) => {
   const b = req.body || {};
-  const operator = str(b.operator, 50), note = str(b.note, 100), lot = str(b.lot, 60), unit = str(b.unit, 10);
+  const operator = str(b.operator, 50), note = str(b.note, 100), lot = str(b.lot, 60), unit = str(b.unit, 10), expiry = str(b.expiry, 10);
   const delta = parseInt(b.delta, 10), pid = parseInt(b.productId, 10);
   if (!operator) throw new UserError('請先點選操作人');
   if (!delta || Math.abs(delta) > 100000) throw new UserError('請輸入要增減的數量（負數＝減少）');
@@ -1165,11 +1232,11 @@ app.post('/api/stock/adjust', wrap(async (req, res) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['stock' + pid]);
     const pr = await client.query('SELECT name FROM products WHERE id=$1', [pid]);
     if (!pr.rows[0]) throw new UserError('找不到這個品項');
-    const have = (await client.query(`SELECT COALESCE(SUM(qty),0)::int AS n FROM stock_moves WHERE product_id=$1 AND lot=$2 AND unit=$3`, [pid, lot, unit])).rows[0].n;
+    const have = (await client.query(`SELECT COALESCE(SUM(qty),0)::int AS n FROM stock_moves WHERE product_id=$1 AND lot=$2 AND unit=$3 AND expiry=$4`, [pid, lot, unit, expiry])).rows[0].n;
     if (have + delta < 0) throw new UserError('庫存只有 ' + have + '，不能減到負數');
     await client.query(
-      `INSERT INTO stock_moves (product_id, product_name, unit, lot, qty, kind, operator, note) VALUES ($1,$2,$3,$4,$5,'adjust',$6,$7)`,
-      [pid, pr.rows[0].name, unit, lot, delta, operator, note]);
+      `INSERT INTO stock_moves (product_id, product_name, unit, lot, expiry, qty, kind, operator, note) VALUES ($1,$2,$3,$4,$5,$6,'adjust',$7,$8)`,
+      [pid, pr.rows[0].name, unit, lot, expiry, delta, operator, note]);
     await bump(client);
     await client.query('COMMIT');
     res.json({ ok: true });
@@ -1422,10 +1489,10 @@ app.put('/api/config', wrap(async (req, res) => {
 app.get('/api/export.csv', wrap(async (req, res) => {
   const cfg = await getConfig();
   const { rows } = await pool.query(`SELECT * FROM tasks WHERE status='done' ORDER BY completed_at DESC`);
-  const head = ['完成時間', '批號', '類別', '品項', '完成數量', '訂單數量', '單位', '客戶', '出貨日', '出貨方式', '操作人', '原料有效日', '到貨次序', '禮盒內容物批號', '備註'];
+  const head = ['完成時間', '批號', '類別', '品項', '完成數量', '訂單數量', '單位', '客戶', '出貨日', '出貨方式', '操作人', '原料有效日', '到貨次序', '禮盒內容物批號', '庫存出貨批次（批號×數量，效期）', '備註'];
   const fmt = (d) => d ? new Date(d).toLocaleString('zh-TW', { timeZone: TZ, hour12: false }) : '';
   const lines = [head].concat(rows.map((t) => [fmt(t.completed_at), t.lot, t.contents ? '禮盒' : ((cfg.cats[t.cat] || {}).name || t.cat),
-    t.product_name, t.qty, t.ordered_qty || t.qty, t.unit || '', t.customer, t.ship_date, t.ship_method || '', t.operator, t.mat_date || '', t.mat_arr || '', (t.contents || []).map((c) => c.name + ' ' + c.lot + '（' + c.date + '）').join('；'), t.note || '']));
+    t.product_name, t.qty, t.ordered_qty || t.qty, t.unit || '', t.customer, t.ship_date, t.ship_method || '', t.operator, t.mat_date || '', t.mat_arr || '', (t.contents || []).map((c) => c.name + ' ' + c.lot + '（' + c.date + '）').join('；'), (t.ship_lots || []).map((x) => x.lot + ' ×' + x.qty + '，效期 ' + (x.expiry || '未填')).join('；'), t.note || '']));
   const csv = '﻿' + lines.map((r) => r.map((c) => '"' + String(c == null ? '' : c).replace(/"/g, '""') + '"').join(',')).join('\r\n');
   const name = '生產紀錄_' + Object.values(taipeiParts()).join('') + '.csv';
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
