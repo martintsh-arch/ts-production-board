@@ -162,6 +162,8 @@ async function migrate() {
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS delivery_issue TEXT NOT NULL DEFAULT '';
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS trip_id INTEGER;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS stop_seq INTEGER;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS trip_driver TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '';
     CREATE TABLE IF NOT EXISTS trips (id SERIAL PRIMARY KEY, driver TEXT NOT NULL, ship_date TEXT NOT NULL, departed_at TIMESTAMPTZ NOT NULL DEFAULT now());
   `);
   await pool.query(
@@ -213,6 +215,9 @@ async function bump(client) {
   // leftovers / extra lots keep the delivery method of their order
   await (client || pool).query(`UPDATE tasks c SET ship_method=p.ship_method FROM tasks p
     WHERE c.parent_id=p.id AND c.ship_method='' AND p.ship_method<>''`);
+  // leftovers keep who placed the order
+  await (client || pool).query(`UPDATE tasks c SET created_by=p.created_by FROM tasks p
+    WHERE c.parent_id=p.id AND c.created_by='' AND p.created_by<>''`);
   await (client || pool).query(`UPDATE meta SET value = value + 1 WHERE key = 'rev'`);
 }
 function taipeiParts(d = new Date()) {
@@ -233,7 +238,7 @@ function rowTask(r) {
     completedAt: r.completed_at, operator: r.operator, matDate: r.mat_date, matArr: r.mat_arr,
     unit: r.unit || '', contents: r.contents || null, parentId: r.parent_id, lotHistory: r.lot_history, createdAt: r.created_at,
     urgent: !!r.urgent, urgentAt: r.urgent_at, shipMethod: r.ship_method || '',
-    deliveryStatus: r.delivery_status || '', deliveryAt: r.delivery_at || null, deliveredBy: r.delivered_by || '', deliveryIssue: r.delivery_issue || '', tripId: r.trip_id || null, fromStock: !!r.from_stock, useStock: !!r.use_stock, locked: !!r.locked, startedAt: r.started_at || null, holdUntil: r.hold_until || null, holdReason: r.hold_reason || '',
+    deliveryStatus: r.delivery_status || '', deliveryAt: r.delivery_at || null, deliveredBy: r.delivered_by || '', deliveryIssue: r.delivery_issue || '', tripId: r.trip_id || null, tripDriver: r.trip_driver || '', createdBy: r.created_by || '', fromStock: !!r.from_stock, useStock: !!r.use_stock, locked: !!r.locked, startedAt: r.started_at || null, holdUntil: r.hold_until || null, holdReason: r.hold_reason || '',
   };
 }
 async function getConfig(client) {
@@ -659,7 +664,7 @@ async function readOrderBody(b) {
   if (!isDate(shipDate)) throw new UserError('請選擇出貨日');
   const { rows } = await pool.query('SELECT * FROM products WHERE id = $1', [productId]);
   if (!rows[0]) throw new UserError('找不到這個品項');
-  return { customer, product: rows[0], qty, shipDate, note, unit, shipMethod, useStock: b.useStock === true };
+  return { customer, product: rows[0], qty, shipDate, note, unit, shipMethod, useStock: b.useStock === true, createdBy: str(b.createdBy, 20) };
 }
 
 async function rememberPurchase(customer, productId) {
@@ -691,7 +696,7 @@ app.post('/api/tasks/batch', wrap(async (req, res) => {
   const orders = [];
   for (let i = 0; i < items.length; i++) {
     try {
-      orders.push(await readOrderBody({ customer: b.customer, shipDate: b.shipDate, note: b.note, shipMethod: b.shipMethod, ...items[i], useStock: items[i].useStock === true }));
+      orders.push(await readOrderBody({ customer: b.customer, shipDate: b.shipDate, note: b.note, shipMethod: b.shipMethod, createdBy: b.createdBy, ...items[i], useStock: items[i].useStock === true }));
     } catch (e) {
       if (e instanceof UserError) throw new UserError('第 ' + (i + 1) + ' 行：' + e.message);
       throw e;
@@ -706,9 +711,9 @@ app.post('/api/tasks/batch', wrap(async (req, res) => {
     for (const o of orders) {
       order += 10;
       const { rows: ins } = await client.query(
-        `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, unit, sort_order, urgent, urgent_at, ship_method, use_stock)
-         VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,CASE WHEN $11 THEN now() END,$12,$13) RETURNING id`,
-        [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, o.unit, order, urgent, o.shipMethod, o.useStock]);
+        `INSERT INTO tasks (customer, product_id, product_name, cat, variety, qty, ordered_qty, ship_date, note, unit, sort_order, urgent, urgent_at, ship_method, use_stock, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,CASE WHEN $11 THEN now() END,$12,$13,$14) RETURNING id`,
+        [o.customer, o.product.id, o.product.name, o.product.cat, o.product.variety, o.qty, o.shipDate, o.note, o.unit, order, urgent, o.shipMethod, o.useStock, o.createdBy]);
       o.id = ins[0].id;
     }
     for (const o of orders.filter((x) => x.useStock)) {
@@ -1480,6 +1485,7 @@ async function driverToday(cfg) {
       customer: name, address: c.address || '', lat: c.lat, lng: c.lng,
       win: c.recv_open ? { open: c.recv_open, close: c.recv_close, lunchFrom: c.recv_lunch_from, lunchTo: c.recv_lunch_to } : null,
       status: st, ready: ts.every((t) => t.status === 'done'),
+      claimedBy: st === 'pending' ? ((ts.find((t) => t.trip_driver && (t.delivery_status === '' || t.delivery_status == null)) || {}).trip_driver || '') : '',
       items: ts.map((t) => ({ id: t.id, name: t.product_name, qty: t.qty, unit: t.unit || '', lot: t.status === 'done' ? t.lot : '', ready: t.status === 'done', note: t.note || '', status: t.delivery_status || '', issue: t.delivery_issue || '' })),
       doneAt: ts.map((t) => t.delivery_at).filter(Boolean).sort().pop() || null,
       by: (ts.find((t) => t.delivered_by) || {}).delivered_by || '',
@@ -1489,28 +1495,44 @@ async function driverToday(cfg) {
     };
   });
   stops.sort((a, b) => (a.status === 'pending' ? 0 : 1) - (b.status === 'pending' ? 0 : 1) || a.seq - b.seq || a.customer.localeCompare(b.customer, 'zh-Hant'));
-  const { rows: tr } = await pool.query(`SELECT * FROM trips WHERE ship_date=$1 ORDER BY id DESC LIMIT 1`, [td]);
-  return { date: td, drivers: driversOf(cfg), reasons: FAIL_REASONS, stops, trip: tr[0] ? { id: tr[0].id, driver: tr[0].driver, departedAt: tr[0].departed_at } : null, now: new Date().toISOString() };
+  return { date: td, drivers: driversOf(cfg), reasons: FAIL_REASONS, stops, now: new Date().toISOString() };
 }
 app.get('/driver', (req, res) => res.sendFile(path.join(__dirname, 'driver.html')));
 dRoute('get', '/today', async (req, res) => res.json(await driverToday(req.cfg)));
 dRoute('post', '/depart', async (req, res) => {
-  const driver = str((req.body || {}).driver, 20);
+  const b = req.body || {}, driver = str(b.driver, 20);
+  const want = (Array.isArray(b.customers) ? b.customers : []).map((x) => str(x, 80)).filter(Boolean).slice(0, 40);
   if (!driversOf(req.cfg).includes(driver)) throw new UserError('請先選擇司機');
-  const d = await driverToday(req.cfg), go = d.stops.filter((s) => s.status === 'pending' && s.ready);
-  if (!go.length) throw new UserError('目前沒有已完工、可以出發的貨');
+  if (!want.length) throw new UserError('請先勾選這趟要送的客戶');
+  const d = await driverToday(req.cfg);
+  const mine = d.stops.filter((s) => s.status === 'pending' && s.claimedBy === driver).map((s) => s.seq).filter((x) => x < 1000);
+  let seq = (mine.length ? Math.max(...mine) : 0) + 1;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { rows } = await client.query(`INSERT INTO trips (driver, ship_date) VALUES ($1,$2) RETURNING id`, [driver, d.date]);
-    let seq = 1;
-    for (const s of go) {
-      await client.query(`UPDATE tasks SET trip_id=$1, stop_seq=$2 WHERE id = ANY($3::int[])`, [rows[0].id, seq++, s.items.map((i) => i.id)]);
+    const { rows: tr } = await client.query(`INSERT INTO trips (driver, ship_date) VALUES ($1,$2) RETURNING id`, [driver, d.date]);
+    for (const name of want) {
+      const s = d.stops.find((x) => x.customer === name);
+      if (!s || s.status !== 'pending') throw new UserError('「' + name + '」今天沒有可以帶走的貨');
+      if (!s.ready) throw new UserError('「' + name + '」還有貨沒做完');
+      const ids = s.items.map((i) => i.id);
+      const { rows: lock } = await client.query(`SELECT id, trip_driver FROM tasks WHERE id = ANY($1::int[]) AND delivery_status='' FOR UPDATE`, [ids]);
+      const other = lock.find((t) => t.trip_driver && t.trip_driver !== driver);
+      if (other) throw new UserError('「' + name + '」已經被 ' + other.trip_driver + ' 帶走了');
+      await client.query(`UPDATE tasks SET trip_id=$1, trip_driver=$2, stop_seq=$3 WHERE id = ANY($4::int[]) AND delivery_status=''`, [tr[0].id, driver, seq++, ids]);
     }
     await bump(client);
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
-  res.json(await driverToday(req.cfg));
+  res.json({ ok: true });
+});
+dRoute('post', '/release', async (req, res) => {
+  const b = req.body || {}, driver = str(b.driver, 20), ids = (Array.isArray(b.taskIds) ? b.taskIds : []).map((x) => parseInt(x, 10)).filter(Boolean).slice(0, 50);
+  if (!driversOf(req.cfg).includes(driver)) throw new UserError('請先選擇司機');
+  if (!ids.length) throw new UserError('沒有要放回去的貨');
+  await pool.query(`UPDATE tasks SET trip_id=NULL, trip_driver='', stop_seq=NULL WHERE id = ANY($1::int[]) AND delivery_status='' AND trip_driver=$2`, [ids, driver]);
+  await bump();
+  res.json({ ok: true });
 });
 const idList = (b) => (Array.isArray(b && b.taskIds) ? b.taskIds : []).map((x) => parseInt(x, 10)).filter(Boolean).slice(0, 50);
 dRoute('post', '/done', async (req, res) => {
@@ -1571,7 +1593,7 @@ app.post('/api/deliveries/reopen', wrap(async (req, res) => {
   const ids = idList(req.body);
   if (!ids.length) throw new UserError('沒有選到訂單');
   await pool.query(
-    `UPDATE tasks SET delivery_status='', delivery_at=NULL, delivered_by='', delivery_issue='', trip_id=NULL, stop_seq=NULL, ship_date = GREATEST(ship_date, $2)
+    `UPDATE tasks SET delivery_status='', delivery_at=NULL, delivered_by='', delivery_issue='', trip_id=NULL, trip_driver='', stop_seq=NULL, ship_date = GREATEST(ship_date, $2)
      WHERE id = ANY($1::int[]) AND status='done' AND delivery_status IN ('failed','delivered')`, [ids, taipeiDate(new Date())]);
   await bump();
   res.json({ ok: true });
