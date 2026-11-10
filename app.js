@@ -484,7 +484,7 @@ function renderAps(){
     (prod.length?Object.keys(byLine).map(k=>{const L=A.lines.find(l=>l.id===k);return '<div class="ad-line"><div class="ad-ln">'+esc(L?L.name:'未指定產線')+'</div>'+byLine[k].map(t=>{const p=T[t.id];
       return '<div class="ad-row'+(p.late?' late':'')+'"><span class="ad-tm">'+segTime(p,D)+'</span><div class="ad-m"><b>'+(t.locked?'🔒 ':'')+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'</span>'+whyChips(t,3)+'<small>'+[p.minutes?'約 '+p.minutes+' 分鐘':'工時未知',p.changeover?'含換線 '+p.changeover+' 分':'',p.rateSrc||'',...(p.reasons||[]),...(p.flags||[]).filter(f=>f!=='工時未知')].filter(Boolean).map(esc).join('・')+'</small></div><span class="ad-q">'+qtyU(t)+'</span>'+apsActs(t)+'</div>'}).join('')+'</div>'}).join(''):'<p class="hint">這天沒有排生產。</p>')+
     '</div><div class="ad-col"><h3>出貨／配送</h3>'+(ship.length?METHODS.concat(['']).map(m=>{const ts=ship.filter(t=>(t.shipMethod||'')===m).sort((a,b)=>stopIdx(a,D)-stopIdx(b,D));if(!ts.length)return '';
-      return '<div class="ad-line"><div class="ad-ln">'+(m?methodPill({shipMethod:m}):'<span class="pill p-tom">未選出貨方式</span>')+'</div>'+ts.map(t=>{const p=T[t.id];const ok=p&&p.day&&!p.late;return '<div class="ad-row"><div class="ad-m"><b>'+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'</span>'+(m==='公司配送'?'<small>'+(stopIdx(t,D)<99?'第 '+(stopIdx(t,D)+1)+' 站・':'')+esc(((S.customers.find(c=>c.name===t.customer)||{}).address)||'地址待確認')+'</small>':'')+'</div><span class="ad-q">'+qtyU(t)+'</span><span class="ad-st '+(ok?'ok':'bad')+'">'+(ok?'預計 '+md(p.day)+' 完成':'可能來不及')+'</span></div>'}).join('')+'</div>'}).join(''):'<p class="hint">這天沒有出貨。</p>')+
+      return '<div class="ad-line"><div class="ad-ln">'+(m?methodPill({shipMethod:m}):'<span class="pill p-tom">未選出貨方式</span>')+'</div>'+ts.map(t=>{const p=T[t.id];const ok=t.useStock||(p&&p.day&&!p.late);return '<div class="ad-row"><div class="ad-m"><b>'+esc(t.customer)+'</b><span>'+esc(shortName(t.productName))+'</span>'+(m==='公司配送'?'<small>'+(stopIdx(t,D)<99?'第 '+(stopIdx(t,D)+1)+' 站・':'')+esc(((S.customers.find(c=>c.name===t.customer)||{}).address)||'地址待確認')+'</small>':'')+'</div><span class="ad-q">'+qtyU(t)+'</span><span class="ad-st '+(ok?'ok':'bad')+'">'+(t.useStock?'庫存現貨':ok?'預計 '+md(p.day)+' 完成':'可能來不及')+'</span></div>'}).join('')+'</div>'}).join(''):'<p class="hint">這天沒有出貨。</p>')+
     '<p class="hint">車輛載重、收貨時段、行車時間尚未建立，配送順序僅依地區分組，未驗證行車時間。</p></div></div></section>';
   // run log
   h+='<section class="aps-sec"><h2>重排紀錄<span>每次訂單或參數變動，系統重算並記錄前後差異</span></h2><div class="aps-runs">'+(S.runs&&S.runs.length?S.runs.map(r=>{const d=r.diff||{};
@@ -678,7 +678,7 @@ let dragging=false;
 function unitSum(ts){const m={};ts.forEach(t=>{const u=t.unit||'件';m[u]=(m[u]||0)+(+t.qty||0)});const k=Object.keys(m);return k.length?k.map(u=>num(m[u])+' '+u).join('　'):'—'}
 const METHODS=['門市自取','公司配送','物流配送'];
 const MCLS={'門市自取':'m-store','公司配送':'m-own','物流配送':'m-log'};
-function methodPill(t,big){return t.shipMethod?'<span class="pill mpill '+MCLS[t.shipMethod]+(big?' big':'')+'">'+esc(t.shipMethod)+'</span>':''}
+function methodPill(t,big){return (t.useStock?'<span class="pill p-stock'+(big?' big':'')+'">庫存</span>':'')+(t.shipMethod?'<span class="pill mpill '+MCLS[t.shipMethod]+(big?' big':'')+'">'+esc(t.shipMethod)+'</span>':'')}
 function shipCell(t,td){const md=t.shipDate.slice(5).replace('-','/');
   if(t.shipDate<td)return '<span class="c-ship s-over">逾期 <b>'+md+'</b></span>';
   if(t.shipDate===td)return '<span class="c-ship s-today">今日出貨</span>';
@@ -759,14 +759,14 @@ function renderBoard(){
       '<div class="meta">'+methodPill(t)+code+(t.parentId?'<span class="pill p-later">續做</span>':'')+(t.locked?'<span class="lock-tag">🔒 鎖定</span>':'')+(t.holdUntil?'<span class="hold-tag">待料 '+md(t.holdUntil)+'</span>':'')+etaTag(t)+'</div>'+
       (t.note?'<div class="note-box">備註：'+esc(t.note)+'</div>':'')+
       '<div class="c-bot"><div class="c-qty"><b>'+num(t.qty)+'</b><span>'+esc(t.unit||'')+'</span></div>'+
-      (S.pick?'':'<div class="c-acts">'+stockBtn(t)+'<button class="done-btn" data-act="finish" data-id="'+t.id+'">完成生產</button></div>')+'</div></div>'}).join('')+'</div>'+
+      (S.pick?'':'<div class="c-acts">'+stockBtn(t)+(t.useStock?'':'<button class="done-btn" data-act="finish" data-id="'+t.id+'">完成生產</button>')+'</div>')+'</div></div>'}).join('')+'</div>'+
     (S.pick?'<div class="pickbar"><span>已選 <b>'+S.pick.size+'</b> 筆</span><button type="button" id="pickcancel">取消</button><button type="button" id="pickgo" class="primary"'+(S.pick.size?'':' aria-disabled="true"')+'>一起完成</button></div>':'');
   if(doneToday.length)h+='<div class="bd-head bd-done"><div><b>今日已完成</b><span>'+doneToday.length+' 筆，批號有誤可直接修改</span></div></div><div class="done-list">'+
     doneToday.map(t=>'<div class="drow"><span class="d-ok" aria-hidden="true">✓</span><span class="d-time">'+fmtTime(t.completedAt).split(' ')[1]+'</span>'+
       '<span class="d-main"><b>'+esc(t.customer)+'</b><span>'+esc(t.productName)+'　'+qtyU(t)+'</span></span>'+
       '<span class="d-lot">'+esc(t.lot)+(t.fromStock?' ·庫存':'')+'</span><span class="d-op">'+esc(t.operator)+'</span>'+
       (t.contents?'<span></span>':'<button type="button" data-blot="'+t.id+'">改批號</button>')+'</div>').join('')+'</div>';
-  h+=stockPanel();v.innerHTML=h;countUp();updateTicker(doneToday);
+  h+=deliveryPanel()+stockPanel();v.innerHTML=h;countUp();updateTicker(doneToday);
   const el=$('#blist');
   if(el&&window.Sortable&&!S.pick)Sortable.create(el,{handle:'.grip',animation:150,ghostClass:'ghost-sort',
     onStart:()=>{dragging=true},
@@ -784,13 +784,40 @@ $('#v-board').addEventListener('click',e=>{
   const bl=e.target.closest('[data-blot]');if(bl){const t=S.done.find(x=>x.id===+bl.dataset.blot);if(t)openLotEdit(t);return}
   if(S.pick){const c=e.target.closest('.card[data-id]');if(c){const id=+c.dataset.id;S.pick.has(id)?S.pick.delete(id):S.pick.add(id);Snd.play('tap');renderBoard()}return}
   const us=e.target.closest('[data-act="usestock"]');if(us)return openUseStock(+us.dataset.id);
+  const ho=e.target.closest('[data-handoff]');if(ho){const ids=ho.dataset.handoff.split(',').map(Number);return act(()=>api('POST','/api/deliveries/handoff',{taskIds:ids,operator:store.get('tsb_op')||'辦公室'}),'已記錄').then(()=>refresh(true)).then(()=>render(true))}
+  const ro=e.target.closest('[data-reopen]');if(ro){const ids=ro.dataset.reopen.split(',').map(Number);return act(()=>api('POST','/api/deliveries/reopen',{taskIds:ids}),'已重新排入今天配送').then(()=>refresh(true)).then(()=>render(true))}
   const sa=e.target.closest('[data-stockadj]');if(sa)return openStockAdj(+sa.dataset.pid,sa.dataset.lot,sa.dataset.unit);
   const b=e.target.closest('[data-act="finish"]');if(b)openFinish(+b.dataset.id)});
 $('#v-board').addEventListener('keydown',e=>{if(S.pick&&(e.key===' '||e.key==='Enter')&&e.target.matches('.card[data-id]')){e.preventDefault();e.target.click()}});
 
 /* ---------- finished-goods stock ---------- */
 const stockOf=t=>(S.stock||[]).filter(x=>x.productId===t.productId&&x.unit===(t.unit||''));
-function stockBtn(t){const a=stockOf(t),n=a.reduce((s,x)=>s+x.qty,0);return n>0?'<button type="button" class="stock-btn" data-act="usestock" data-id="'+t.id+'" title="這個品項有成品庫存，可直接出貨">庫存可用 <b class="mono">'+num(n)+'</b>'+esc(t.unit||'')+'</button>':''}
+const stockFreeC=(pid,unit,exId)=>{const have=(S.stock||[]).filter(x=>String(x.productId)===String(pid)&&x.unit===(unit||'')).reduce((a,x)=>a+x.qty,0);const res=(S.open||[]).filter(t=>t.useStock&&String(t.productId)===String(pid)&&(t.unit||'')===(unit||'')&&t.id!==exId).reduce((a,t)=>a+t.qty,0);return have-res};
+/* ---------- delivery progress ---------- */
+const tpDay=iso=>new Date(iso).toLocaleDateString('sv-SE',{timeZone:'Asia/Taipei'});
+function deliveryPanel(){
+  const td=today(),all=(S.done||[]).filter(t=>t.deliveryStatus!=='legacy'&&t.status==='done');
+  const pend=all.filter(t=>t.deliveryStatus===''),fail=all.filter(t=>t.deliveryStatus==='failed'),ok=all.filter(t=>t.deliveryStatus==='delivered'&&t.deliveryAt&&tpDay(t.deliveryAt)===td);
+  if(!pend.length&&!fail.length&&!ok.length)return '';
+  const grp=(arr)=>{const m={};arr.forEach(t=>{const k=t.customer+'|'+(t.shipMethod||'');(m[k]=m[k]||{customer:t.customer,method:t.shipMethod||'',ts:[]}).ts.push(t)});return Object.values(m)};
+  const ids=g=>g.ts.map(t=>t.id).join(',');
+  const items=g=>g.ts.map(t=>esc(shortName(t.productName))+' '+num(t.qty)+esc(t.unit||'')).join('、');
+  let h='<div class="bd-head bd-deliv"><div><b>配送進度</b><span>公司配送由司機在手機上按「已送達」，其他方式在這裡標記</span></div></div><div class="dv-list">';
+  const own=grp(pend.filter(t=>t.shipMethod==='公司配送')),oth=grp(pend.filter(t=>t.shipMethod!=='公司配送'));
+  if(fail.length)grp(fail).forEach(g=>{h+='<div class="dv-row bad"><span class="dv-m"><b>'+esc(g.customer)+'</b><small>'+items(g)+'</small></span><span class="dv-st">異常：'+esc(g.ts[0].deliveryIssue||'')+'　'+esc(g.ts[0].deliveredBy)+' '+esc(fmtTime(g.ts[0].deliveryAt))+'</span><button type="button" data-reopen="'+ids(g)+'">重新派送</button></div>'});
+  own.forEach(g=>{const out=g.ts.some(t=>t.tripId);h+='<div class="dv-row"><span class="dv-m"><b>'+esc(g.customer)+'</b><small>'+items(g)+'</small></span><span class="dv-st">'+(out?'配送中':'等司機出發')+'</span></div>'});
+  oth.forEach(g=>{const lab=g.method==='門市自取'?'已取貨':g.method==='物流配送'?'已交物流':'已出貨';h+='<div class="dv-row"><span class="dv-m"><b>'+esc(g.customer)+'</b><small>'+esc(g.method||'未選出貨方式')+'　'+items(g)+'</small></span><span class="dv-st">待出貨</span><button type="button" data-handoff="'+ids(g)+'">標記'+lab+'</button></div>'});
+  grp(ok).forEach(g=>{h+='<div class="dv-row ok"><span class="dv-m"><b>'+esc(g.customer)+'</b><small>'+items(g)+'</small></span><span class="dv-st">✓ '+esc(fmtTime(g.ts[0].deliveryAt))+'　'+esc(g.ts[0].deliveredBy)+(g.ts[0].shipMethod==='公司配送'?'':'・'+esc(g.ts[0].shipMethod))+'</span></div>'});
+  return h+'</div><div class="hint" style="margin:6px 0 0">司機頁網址：'+esc(location.origin)+'/driver</div>';
+}
+function driverCard(){
+  const c=cfg(),dr=c.drivers||[];
+  return '<h2>配送司機</h2><div class="panel"><p class="hint" style="margin-top:0">司機用手機打開 <b>'+esc(location.origin)+'/driver</b>，輸入下面的司機密碼，再點自己的名字。司機只看得到今天的配送，改不了訂單和設定。</p>'+
+    '<div class="chips" style="margin-bottom:12px">'+(dr.map((n,i)=>'<button class="chip" data-deld="'+i+'" title="移除">'+esc(n)+'　×</button>').join(''))+'</div>'+
+    '<div class="row" style="margin-bottom:12px"><input id="s-driver" placeholder="新增司機姓名" style="flex:1;min-width:160px"><button id="s-adddrv" class="primary">新增司機</button></div>'+
+    '<div class="row"><input id="s-dpin" type="text" autocomplete="off" placeholder="'+(c.driverPinSet?'已設定（輸入新密碼可更換）':'設定司機密碼（至少 4 碼）')+'" style="flex:1;min-width:160px"><button id="s-setpin" class="primary">儲存密碼</button></div></div>';
+}
+function stockBtn(t){if(t.useStock)return '<button type="button" class="stock-btn use" data-act="usestock" data-id="'+t.id+'">用庫存出貨</button>';const n=stockFreeC(t.productId,t.unit||'',t.id);return n>0?'<button type="button" class="stock-btn" data-act="usestock" data-id="'+t.id+'" title="這個品項有成品庫存，可直接出貨">庫存可用 <b class="mono">'+num(n)+'</b>'+esc(t.unit||'')+'</button>':''}
 function stockPanel(){
   const st=S.stock||[],log=(S.stockLog||[]).slice(0,8);
   if(!st.length&&!log.length)return '';
@@ -1135,7 +1162,7 @@ resetOrderForm();
 function renderOrders(){
   const v=$('#v-orders'),prods=S.products.filter(p=>p.active!==false);
   const ed=S.editOrder?S.open.find(t=>t.id===S.editOrder):null;
-  if(ed&&OF.editing!==ed.id){OF.editing=ed.id;OF.method=ed.shipMethod||'';OF.cust=ed.customer;OF.date=ed.shipDate;OF.note=ed.note||'';OF.lines=[{p:String(ed.productId||''),q:String(ed.qty),u:ed.unit||''}];OF.addrTouched=false;OF.addrFor='';fillAddr()}
+  if(ed&&OF.editing!==ed.id){OF.editing=ed.id;OF.method=ed.shipMethod||'';OF.cust=ed.customer;OF.date=ed.shipDate;OF.note=ed.note||'';OF.lines=[{p:String(ed.productId||''),q:String(ed.qty),u:ed.unit||'',s:!!ed.useStock}];OF.addrTouched=false;OF.addrFor='';fillAddr()}
   if(!ed&&OF.editing){OF.editing=null;resetOrderForm()}
   const names=new Set(S.customers.map(c=>c.name));S.open.concat(S.done).forEach(t=>{if(t.customer)names.add(t.customer)});
   const codeOf={};S.customers.forEach(c=>{if(c.code)codeOf[c.name]=c.code});
@@ -1174,7 +1201,7 @@ function renderLines(focusIdx){
     '<select class="l-prod" aria-label="品項" style="flex:1 1 260px;min-width:0"><option value="">選擇品項</option>'+prods.map(p=>'<option value="'+p.id+'"'+(String(p.id)===l.p?' selected':'')+'>'+esc(prodLabel(p))+'</option>').join('')+'</select>'+
     '<div class="row" style="flex-wrap:nowrap;gap:6px;flex:0 1 auto"><input class="l-qty mono" type="number" inputmode="numeric" min="1" placeholder="數量" aria-label="數量" value="'+esc(l.q)+'" style="width:96px">'+
     UNITS.map(u=>'<button type="button" class="chip" data-lu="'+u+'" aria-pressed="'+(l.u===u)+'" style="min-height:48px;padding:6px 12px">'+u+'</button>').join('')+
-    (multi?'<button type="button" data-ldel="'+i+'" aria-label="刪除這一行" style="padding:6px 12px;color:var(--red)">✕</button>':'')+'</div></div>').join('');
+    (multi?'<button type="button" data-ldel="'+i+'" aria-label="刪除這一行" style="padding:6px 12px;color:var(--red)">✕</button>':'')+'</div>'+srcRow(l)+'</div>').join('');
   const n=OF.lines.length,sb=$('#o-submit');
   if(sb)sb.textContent=S.editOrder?'儲存修改':(n>1?'加入排程（'+n+' 個品項）':'加入排程');
   if(focusIdx!=null){const s=box.querySelectorAll('.l-prod')[focusIdx];if(s)s.focus()}
@@ -1195,6 +1222,14 @@ function renderHist(){
   markHist();
 }
 function fillAddr(){const name=resolveCustomer(OF.cust);if(OF.addrFor===name&&OF.addrTouched)return;const c=S.customers.find(x=>x.name===name);OF.addrFor=name;OF.addrTouched=false;OF.addr=c&&c.address||'';const i=$('#o-addr');if(i)i.value=OF.addr}
+function srcRow(l){
+  if(!l.p||!l.u)return '';const free=stockFreeC(l.p,l.u,S.editOrder?+S.editOrder:0);
+  if(free<=0){if(l.s)l.s=false;return ''}
+  return '<div class="src-row" style="flex:1 1 100%;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span class="hint">貨源</span>'+
+    '<button type="button" class="chip" data-ls="0" aria-pressed="'+(!l.s)+'" style="min-height:44px;padding:4px 14px">現做</button>'+
+    '<button type="button" class="chip" data-ls="1" aria-pressed="'+(!!l.s)+'" style="min-height:44px;padding:4px 14px">用庫存</button>'+
+    '<span class="hint">庫存可用 <b class="mono">'+num(free)+'</b>'+esc(l.u)+(l.s&&+l.q>free?'　<b style="color:var(--red)">數量超過庫存</b>':'')+'</span></div>';
+}
 function lineIdx(el){const l=el.closest('.oline');return l?+l.dataset.i:-1}
 $('#v-orders').addEventListener('input',e=>{
   const t=e.target;
@@ -1202,7 +1237,7 @@ $('#v-orders').addEventListener('input',e=>{
   else if(t.id==='o-date')OF.date=t.value;
   else if(t.id==='o-note')OF.note=t.value;
   else if(t.id==='o-addr'){OF.addr=t.value;OF.addrTouched=true}
-  else if(t.classList.contains('l-qty')){const i=lineIdx(t);if(i>=0)OF.lines[i].q=t.value}
+  else if(t.classList.contains('l-qty')){const i=lineIdx(t);if(i>=0){OF.lines[i].q=t.value;const r=t.closest('.oline').querySelector('.src-row');if(r){const tmp=document.createElement('div');tmp.innerHTML=srcRow(OF.lines[i]);if(tmp.firstChild)r.replaceWith(tmp.firstChild)}}}
 });
 $('#v-orders').addEventListener('change',e=>{
   const t=e.target;
@@ -1221,18 +1256,20 @@ $('#v-orders').addEventListener('submit',async e=>{
   const lines=OF.lines.filter(l=>l.p||l.q);
   if(!lines.length)return err('請至少選一個品項');
   for(let i=0;i<lines.length;i++){const l=lines[i],n='第 '+(OF.lines.indexOf(l)+1)+' 行：';
-    if(!l.p)return err(n+'請選擇品項');if(!(+l.q>0))return err(n+'數量需大於 0');if(!l.u)return err(n+'請選擇單位（桶、箱、瓶）')}
+    if(!l.p)return err(n+'請選擇品項');if(!(+l.q>0))return err(n+'數量需大於 0');if(!l.u)return err(n+'請選擇單位（桶、箱、瓶）');
+    if(l.s&&+l.q>stockFreeC(l.p,l.u,S.editOrder?+S.editOrder:0))return err(n+'用庫存的數量超過可用庫存')}
   const id=S.editOrder;
   if(id)S.mineO.add(+id);
-  const r=await act(()=>id?api('PUT','/api/tasks/'+id,{customer,productId:lines[0].p,qty:lines[0].q,unit:lines[0].u,shipDate,note,shipMethod,address:(OF.addr||'').trim()})
-    :api('POST','/api/tasks/batch',{customer,shipDate,note,shipMethod,address:(OF.addr||'').trim(),urgent:!!OF.urgent,items:lines.map(l=>({productId:l.p,qty:l.q,unit:l.u}))}).then(r=>{(r.ids||[]).forEach(i=>S.mineO.add(+i));return r}),
+  const r=await act(()=>id?api('PUT','/api/tasks/'+id,{customer,productId:lines[0].p,qty:lines[0].q,unit:lines[0].u,useStock:!!lines[0].s,shipDate,note,shipMethod,address:(OF.addr||'').trim()})
+    :api('POST','/api/tasks/batch',{customer,shipDate,note,shipMethod,address:(OF.addr||'').trim(),urgent:!!OF.urgent,items:lines.map(l=>({productId:l.p,qty:l.q,unit:l.u,useStock:!!l.s}))}).then(r=>{(r.ids||[]).forEach(i=>S.mineO.add(+i));return r}),
     id?'訂單已更新':(OF.urgent?'緊急單已送出，生產端正在響警報':'已加入排程（'+lines.length+' 個品項）'));
   if(r&&r.ids)r.ids.forEach(i=>S.ack.add(i+':*'));saveAck();
   if(r){S.editOrder=null;OF.editing=null;resetOrderForm();document.activeElement&&document.activeElement.blur();renderOrders()}
 });
 $('#v-orders').addEventListener('click',async e=>{
   const b=e.target.closest('button');if(!b)return;
-  if(b.dataset.lu){const i=lineIdx(b);if(i>=0){OF.lines[i].u=b.dataset.lu;b.parentElement.querySelectorAll('[data-lu]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)))}return}
+  if(b.dataset.lu){const i=lineIdx(b);if(i>=0){OF.lines[i].u=b.dataset.lu;OF.lines[i].s=false;renderLines()}return}
+  if(b.dataset.ls!==undefined){const i=lineIdx(b);if(i>=0){OF.lines[i].s=b.dataset.ls==='1';renderLines()}return}
   if(b.dataset.ldel!==undefined){OF.lines.splice(+b.dataset.ldel,1);if(!OF.lines.length)OF.lines.push({p:'',q:'',u:''});renderLines();return}
   if(b.id==='o-addline'){OF.lines.push({p:'',q:'',u:''});renderLines(OF.lines.length-1);return}
   if(b.dataset.pick){const pid=b.dataset.pick,ex=OF.lines.findIndex(l=>l.p===pid);
@@ -1284,6 +1321,7 @@ function renderSettings(){
   const th=store.get('tsb_theme')==='ivory'?'ivory':'forest';
   let h='<header class="pg-head"><h1>設定</h1><p>人員、品項主檔、批號規則都在這裡，改了所有裝置立刻同步</p></header><h2>外觀主題</h2><div class="panel"><div class="themes"><button type="button" class="theme-opt" data-theme-set="forest" aria-pressed="'+(th==='forest')+'"><i style="background:linear-gradient(135deg,#08100C 55%,#F2B21A)"></i><b>森林綠（夜間）</b><small>深色底、蜂蜜金，適合現場與電視</small></button><button type="button" class="theme-opt" data-theme-set="ivory" aria-pressed="'+(th==='ivory')+'"><i style="background:linear-gradient(135deg,#E6DDC8 55%,#15213B)"></i><b>象牙金（明亮）</b><small>象牙白底、海軍藍字，適合辦公室</small></button></div></div><h2>人員名單</h2><div class="panel"><div class="chips" style="margin-bottom:12px">'+((c.people||[]).map((n,i)=>'<button class="chip" data-delp="'+i+'" title="移除">'+esc(n)+'　×</button>').join('')||'<span class="hint">還沒有人員，新增後在看板完成生產時可以點選。</span>')+'</div>'+
    '<div class="row"><input id="s-person" placeholder="輸入姓名" style="flex:1;min-width:160px"><button id="s-addp" class="primary">新增人員</button></div></div>';
+  h+=driverCard();
   h+='<h2>匯入新高手銷貨紀錄</h2><div class="panel"><p class="hint" style="margin-top:0">從新高手匯出的 CSV 或 Excel 另存的 CSV。欄位順序：客戶名稱、品號、品名（或：客戶編號、客戶名稱、品號、品名）。重複匯入不會產生重複資料。</p>'+
    '<div class="row"><input id="s-imp" type="file" accept=".csv,text/csv" style="flex:1;min-width:200px"><button id="s-impgo" class="primary">匯入</button></div><div class="err" id="imperr"></div><div id="impres" class="hint"></div></div>';
   h+='<h2>品項主檔</h2><div class="panel"><div class="grid">'+
@@ -1357,6 +1395,9 @@ $('#v-settings').addEventListener('click',async e=>{
   if(b.id==='s-impgo'){b.focus();return runImport()}
   if(b.dataset.pbox){return openBoxEditor(+b.dataset.pbox)}
   if(b.id==='s-pmiss'){S.pOnlyMissing=!S.pOnlyMissing;return renderSettings()}
+  if(b.id==='s-adddrv'){const n=$('#s-driver').value.trim();if(!n)return;const dr=(c.drivers||[]).slice();if(dr.includes(n))return toast(n+' 已在名單中');dr.push(n);await act(()=>api('PUT','/api/driver-settings',{drivers:dr}),'已新增司機'+n);return}
+  if(b.dataset.deld!==undefined){const dr=(c.drivers||[]).slice();if(dr.length<=1)return toast('至少要留一位司機');if(b.dataset.armed!=='1'){b.dataset.armed='1';b.textContent='再按一次移除';return}dr.splice(+b.dataset.deld,1);await act(()=>api('PUT','/api/driver-settings',{drivers:dr}),'已移除');return}
+  if(b.id==='s-setpin'){const v=$('#s-dpin').value.trim();if(v.length<4)return toast('司機密碼至少 4 碼');await act(()=>api('PUT','/api/driver-settings',{pin:v}),'司機密碼已儲存');return}
   if(b.id==='s-addp'){const n=$('#s-person').value.trim();if(!n)return;if(c.people.includes(n))return toast(n+' 已在名單中');c.people.push(n);b.focus();await saveCfg('已新增 '+n)}
   else if(b.dataset.delp!==undefined){if(b.dataset.armed!=='1'){b.dataset.armed='1';b.textContent='再按一次移除';return}c.people.splice(+b.dataset.delp,1);await saveCfg('已移除')}
   else if(b.id==='s-addprod'){const code=$('#s-pcode').value.trim(),name=$('#s-pname').value.trim(),cat=$('#s-pcat').value,variety=$('#s-pvar').value;
