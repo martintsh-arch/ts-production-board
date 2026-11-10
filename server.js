@@ -1676,7 +1676,7 @@ app.post('/api/deliveries/reopen', wrap(async (req, res) => {
   if (!ids.length) throw new UserError('沒有選到訂單');
   await pool.query(
     `UPDATE tasks SET delivery_status='', delivery_at=NULL, delivered_by='', delivery_issue='', trip_id=NULL, trip_driver='', stop_seq=NULL, ship_date = GREATEST(ship_date, $2)
-     WHERE id = ANY($1::int[]) AND status='done' AND delivery_status IN ('failed','delivered')`, [ids, taipeiDate(new Date())]);
+     WHERE id = ANY($1::int[]) AND status='done' AND delivery_status IN ('failed','delivered','legacy')`, [ids, taipeiDate(new Date())]);
   await bump();
   res.json({ ok: true });
 }));
