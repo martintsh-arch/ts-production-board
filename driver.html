@@ -47,6 +47,9 @@ header{position:sticky;top:0;background:var(--bg);padding:14px 0 10px;z-index:5;
 .infob{background:#102c20;border:1px solid var(--line);color:var(--mut);border-radius:12px;padding:10px 14px;margin:0 0 12px;font-size:15px}
 .bar{position:fixed;left:0;right:0;bottom:0;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:linear-gradient(transparent,var(--bg) 30%);}
 .bar .in{max-width:560px;margin:0 auto}
+.chk{width:44px;height:44px;min-height:44px;padding:0;border-radius:12px;font-size:26px;font-weight:800;line-height:1;flex:none;display:flex;align-items:center;justify-content:center}
+.chk[aria-pressed=true]{background:var(--honey);color:#1a1608;border-color:var(--honey)}
+.ghost{background:transparent;color:var(--mut);font-size:15px}
 .depart{width:100%;min-height:64px;font-size:20px;font-weight:800;background:var(--honey);color:#1a1608;border-color:var(--honey)}
 .scrim{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:flex-end;justify-content:center;z-index:20}
 .sheet{background:var(--card);border-radius:22px 22px 0 0;padding:20px 16px calc(20px + env(safe-area-inset-bottom));width:100%;max-width:560px;max-height:92vh;overflow:auto}
@@ -69,6 +72,7 @@ header{position:sticky;top:0;background:var(--bg);padding:14px 0 10px;z-index:5;
 const $=s=>document.querySelector(s);
 const LS={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}},del(k){try{localStorage.removeItem(k)}catch(e){}}};
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const SEL=new Set();
 let PIN=LS.get('tsb_dpin')||'',DRV=LS.get('tsb_driver')||'',D=null,ERR='',BUSY=false,Q=[];
 try{Q=JSON.parse(LS.get('tsb_dq')||'[]')}catch(e){Q=[]}
 let lastUndo=null;
@@ -109,21 +113,24 @@ function pinScreen(){
 function whoScreen(){
   return '<header><h1>統香配送</h1><div class="sub">今天是哪一位司機？</div></header><div class="chips">'+(D.drivers||[]).map(n=>'<button class="chip" data-who="'+esc(n)+'">'+esc(n)+'</button>').join('')+'</div>';
 }
-function stopHTML(s,idx,nextIdx){
-  const cls='stop'+(s.status==='delivered'?' done':'')+(s.status==='failed'?' bad':'')+(idx===nextIdx?' next':'');
+function stopHTML(s,idx,mode){
+  const k=esc(s.customer);
+  const cls='stop'+(s.status==='delivered'?' done':'')+(s.status==='failed'?' bad':'')+(mode==='mine'&&idx===0?' next':'')+(mode==='pick'&&SEL.has(s.customer)?' next':'')+(mode==='other'?' done':'');
   const tags=[];
   if(s.status==='delivered')tags.push('<span class="tag ok">已送達 '+esc(s.doneAt?hm(s.doneAt):'')+'・'+esc(s.by)+'</span>');
   else if(s.status==='failed')tags.push('<span class="tag warn">異常：'+esc(s.issue)+'</span>');
   else{
+    if(mode==='other')tags.push('<span class="tag eta">'+esc(s.claimedBy)+' 帶走了</span>');
     if(!s.ready)tags.push('<span class="tag warn">貨還沒做完</span>');
-    if(s.eta)tags.push('<span class="tag eta">預計 '+esc(s.eta)+' 到</span>');
+    if(s.eta&&mode!=='other')tags.push('<span class="tag eta">預計 '+esc(s.eta)+' 到</span>');
     if(s.win)tags.push('<span class="tag">收貨 '+esc(s.win.open)+'–'+esc(s.win.close)+(s.win.lunchFrom?'（午休 '+esc(s.win.lunchFrom)+'–'+esc(s.win.lunchTo)+'）':'')+'</span>');
   }
-  let h='<div class="'+cls+'"><div class="top"><div class="seq">'+(s.status==='pending'?(idx+1):(s.status==='delivered'?'✓':'!'))+'</div><div style="flex:1;min-width:0"><div class="name">'+esc(s.customer)+'</div><div class="addr">'+(esc(s.address)||'<span style="color:var(--bad)">沒有地址，請打給辦公室</span>')+'</div>'+tags.join('')+'</div></div>';
+  const lead=mode==='pick'?'<button class="chk" data-sel="'+k+'" aria-pressed="'+SEL.has(s.customer)+'" aria-label="勾選這一站">'+(SEL.has(s.customer)?'✓':'')+'</button>':'<div class="seq">'+(mode==='mine'?(idx+1):s.status==='delivered'?'✓':s.status==='failed'?'!':'')+'</div>';
+  let h='<div class="'+cls+'"><div class="top">'+lead+'<div style="flex:1;min-width:0"><div class="name">'+esc(s.customer)+'</div><div class="addr">'+(esc(s.address)||'<span style="color:var(--bad)">沒有地址，請打給辦公室</span>')+'</div>'+tags.join('')+'</div></div>';
   h+='<div class="items">'+s.items.map(i=>'<div class="it'+(i.ready?'':' wait')+'"><span>'+esc(i.name)+(i.lot?'<small>'+esc(i.lot)+'</small>':'')+(i.note?'<small>備註：'+esc(i.note)+'</small>':'')+(i.ready?'':'<small>尚未完工</small>')+'</span><b>'+esc(i.qty)+'<span style="font-size:15px;font-family:var(--f)"> '+esc(i.unit)+'</span></b></div>').join('')+'</div>';
-  if(s.status==='pending'){
+  if(mode==='mine'){
     const u=nav(s);
-    h+='<div class="acts">'+(u?'<a class="nav" href="'+esc(u)+'" target="_blank" rel="noopener">導航</a>':'')+'<button class="go" data-done="'+idx+'"'+(s.ready?'':' disabled')+'>已送達</button><button data-fail="'+idx+'"'+(s.ready?'':' disabled')+'>異常</button></div>';
+    h+='<div class="acts">'+(u?'<a class="nav" href="'+esc(u)+'" target="_blank" rel="noopener">導航</a>':'')+'<button class="go" data-done="'+k+'">配送完成</button><button data-fail="'+k+'">異常</button><button class="ghost" data-rel="'+k+'" style="grid-column:1/-1;min-height:44px">這站不送了，放回去</button></div>';
   }
   return h+'</div>';
 }
@@ -134,22 +141,23 @@ function render(){
   if(!DRV||!(D.drivers||[]).includes(DRV)){app.innerHTML=whoScreen();return}
   const st=D.stops,pend=st.filter(s=>s.status==='pending'),done=st.filter(s=>s.status!=='pending');
   const total=st.length,fin=st.filter(s=>s.status==='delivered').length;
-  const ready=pend.filter(s=>s.ready),waiting=pend.filter(s=>!s.ready);
-  const trip=D.trip;
+  const mine=pend.filter(s=>s.claimedBy===DRV).sort((a,b)=>a.seq-b.seq);
+  const pick=pend.filter(s=>s.ready&&!s.claimedBy),other=pend.filter(s=>s.claimedBy&&s.claimedBy!==DRV),waiting=pend.filter(s=>!s.ready&&!s.claimedBy);
+  [...SEL].forEach(n=>{if(!pick.some(s=>s.customer===n))SEL.delete(n)});
   let h='<header><div class="hrow"><div><h1>今日配送</h1><div class="sub">'+esc(D.date.slice(5).replace('-','/'))+'・'+esc(DRV)+' <a href="#" id="chg" style="color:var(--honey)">換人</a></div></div><div style="text-align:right"><span class="num" style="font-size:34px">'+fin+'</span><span class="sub"> / '+total+' 站</span>'+(Q.length?'<div><span class="pend">'+Q.length+' 筆待上傳</span></div>':'')+'</div></div><div class="prog"><i style="width:'+(total?Math.round(fin/total*100):0)+'%"></i></div></header>';
   if(ERR)h+='<div class="warnb">'+esc(ERR)+'</div>';
   if(!st.length)h+='<div class="empty">今天沒有公司配送的單</div>';
-  if(trip&&pend.length)h+='<div class="infob">'+esc(trip.driver)+' '+hm(trip.departedAt)+' 已出發</div>';
-  let n=0;
-  pend.filter(s=>s.ready).forEach(s=>{h+=stopHTML(s,n++,0)});
-  if(waiting.length){h+='<div class="section">還沒做完的貨（完工後才能送）</div>';waiting.forEach(s=>{h+=stopHTML(s,n++,-1)})}
-  if(done.length){h+='<div class="section">已處理</div>';done.forEach((s,i)=>{h+=stopHTML(s,i,-1)})}
+  if(mine.length){h+='<div class="section">我這趟（'+mine.length+' 站）</div>';mine.forEach((s,i)=>{h+=stopHTML(s,i,'mine')})}
+  if(pick.length){h+='<div class="section">可以帶走的貨（勾選這趟要送的客戶）</div>';pick.forEach((s,i)=>{h+=stopHTML(s,i,'pick')})}
+  if(waiting.length){h+='<div class="section">還沒做完的貨（完工後才能送）</div>';waiting.forEach((s,i)=>{h+=stopHTML(s,i,'wait')})}
+  if(other.length){h+='<div class="section">其他司機帶走的</div>';other.forEach((s,i)=>{h+=stopHTML(s,i,'other')})}
+  if(done.length){h+='<div class="section">已處理</div>';done.forEach((s,i)=>{h+=stopHTML(s,i,'done')})}
   app.innerHTML=h;
-  const bar=ready.length&&!trip?'<div class="bar"><div class="in"><button class="depart" id="depart">裝車完成，出發（'+ready.length+' 站）</button></div></div>':'';
+  const bar=SEL.size?'<div class="bar"><div class="in"><button class="depart" id="depart">帶走勾選的 '+SEL.size+' 站，出發</button></div></div>':'';
   $('#toast').innerHTML=(lastUndo?'<div class="toast"><span>'+esc(lastUndo.label)+'</span><button id="undo">撤銷</button></div>':'')+bar;
 }
 function showSheet(html){$('#modal').innerHTML='<div class="scrim" id="scrim"><div class="sheet">'+html+'</div></div>'}
-function stopsByIdx(i){const pend=D.stops.filter(s=>s.status==='pending');return pend.filter(s=>s.ready).concat(pend.filter(s=>!s.ready))[i]}
+function stopByName(n){return D.stops.find(s=>s.customer===n)}
 async function act(path,body,label,stop){
   const b={...body,driver:DRV,at:new Date().toISOString()};
   // optimistic
@@ -169,17 +177,22 @@ document.addEventListener('click',async e=>{
   if(t.id==='retry'){ERR='';return load()}
   if(t.dataset.who){DRV=t.dataset.who;LS.set('tsb_driver',DRV);return render()}
   if(t.id==='chg'){e.preventDefault();DRV='';LS.del('tsb_driver');return render()}
+  if(t.dataset.sel!==undefined){const n=t.dataset.sel;SEL.has(n)?SEL.delete(n):SEL.add(n);return render()}
   if(t.id==='depart'){
     if(BUSY)return;BUSY=true;t.disabled=true;
-    try{await api('POST','/depart',{driver:DRV});ERR=''}catch(er){ERR=er.message}
+    const names=D.stops.filter(s=>SEL.has(s.customer)).map(s=>s.customer);
+    try{await api('POST','/depart',{driver:DRV,customers:names});ERR='';SEL.clear()}catch(er){ERR=er.message}
     BUSY=false;return load();
   }
-  if(t.dataset.done!==undefined){const s=stopsByIdx(+t.dataset.done);if(!s)return;
-    showSheet('<h2>'+esc(s.customer)+'</h2><div class="sub">確認已送達？貨品 '+s.items.length+' 項</div><div class="acts" style="margin-top:16px"><button id="x">取消</button><button class="go" id="okdone" data-i="'+t.dataset.done+'">確認已送達</button></div>');return}
-  if(t.id==='okdone'){const s=stopsByIdx(+t.dataset.i);$('#modal').innerHTML='';if(s)act('/done',{taskIds:s.items.map(i=>i.id)},s.customer+' 已送達',s);return}
-  if(t.dataset.fail!==undefined){const s=stopsByIdx(+t.dataset.fail);if(!s)return;
-    showSheet('<h2>'+esc(s.customer)+'</h2><div class="sub">這一站發生什麼事？</div><div class="reasons">'+D.reasons.map(r=>'<button data-reason="'+esc(r)+'" data-i="'+t.dataset.fail+'" style="font-size:19px">'+esc(r)+'</button>').join('')+'</div><button id="x" style="width:100%">取消</button>');return}
-  if(t.dataset.reason){const s=stopsByIdx(+t.dataset.i);$('#modal').innerHTML='';if(s)act('/fail',{taskIds:s.items.map(i=>i.id),issue:t.dataset.reason},s.customer+' 回報：'+t.dataset.reason,s);return}
+  if(t.dataset.rel!==undefined){const s=stopByName(t.dataset.rel);if(!s)return;
+    try{await api('POST','/release',{driver:DRV,taskIds:s.items.map(i=>i.id)});ERR=''}catch(er){ERR=er.message}
+    return load()}
+  if(t.dataset.done!==undefined){const s=stopByName(t.dataset.done);if(!s)return;
+    showSheet('<h2>'+esc(s.customer)+'</h2><div class="sub">確認配送完成？貨品 '+s.items.length+' 項</div><div class="acts" style="margin-top:16px"><button id="x">取消</button><button class="go" id="okdone" data-i="'+esc(t.dataset.done)+'">確認配送完成</button></div>');return}
+  if(t.id==='okdone'){const s=stopByName(t.dataset.i);$('#modal').innerHTML='';if(s)act('/done',{taskIds:s.items.map(i=>i.id)},s.customer+' 配送完成',s);return}
+  if(t.dataset.fail!==undefined){const s=stopByName(t.dataset.fail);if(!s)return;
+    showSheet('<h2>'+esc(s.customer)+'</h2><div class="sub">這一站發生什麼事？</div><div class="reasons">'+D.reasons.map(r=>'<button data-reason="'+esc(r)+'" data-i="'+esc(t.dataset.fail)+'" style="font-size:19px">'+esc(r)+'</button>').join('')+'</div><button id="x" style="width:100%">取消</button>');return}
+  if(t.dataset.reason){const s=stopByName(t.dataset.i);$('#modal').innerHTML='';if(s)act('/fail',{taskIds:s.items.map(i=>i.id),issue:t.dataset.reason},s.customer+' 回報：'+t.dataset.reason,s);return}
   if(t.id==='x'){$('#modal').innerHTML='';return}
   if(t.id==='undo'&&lastUndo){const u=lastUndo;lastUndo=null;
     try{await api('POST','/undo',{taskIds:u.ids});ERR=''}catch(er){ERR=er.message}
