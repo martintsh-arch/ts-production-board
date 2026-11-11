@@ -1376,6 +1376,7 @@ $('#v-orders').addEventListener('change',e=>{
 $('#v-orders').addEventListener('submit',async e=>{
   e.preventDefault();
   const err=m=>{$('#oerr').textContent=m};
+  const id=S.editOrder;
   const customer=resolveCustomer(OF.cust),shipDate=OF.date,note=OF.note.trim(),shipMethod=OF.method||'';
   if(!customer)return err('請輸入客戶名稱');
   if(!id&&!OF.by)return err('請點選下單人');
@@ -1386,7 +1387,6 @@ $('#v-orders').addEventListener('submit',async e=>{
   for(let i=0;i<lines.length;i++){const l=lines[i],n='第 '+(OF.lines.indexOf(l)+1)+' 行：';
     if(!l.p)return err(n+'請選擇品項');if(!(+l.q>0))return err(n+'數量需大於 0');if(!l.u)return err(n+'請選擇單位（桶、箱、瓶）');
     if(l.s&&+l.q>stockFreeC(l.p,l.u,S.editOrder?+S.editOrder:0))return err(n+'用庫存的數量超過可用庫存')}
-  const id=S.editOrder;
   if(id)S.mineO.add(+id);
   const r=await act(()=>id?api('PUT','/api/tasks/'+id,{customer,productId:lines[0].p,qty:lines[0].q,unit:lines[0].u,useStock:!!lines[0].s,shipDate,note,shipMethod,address:(OF.addr||'').trim()})
     :api('POST','/api/tasks/batch',{customer,shipDate,note,shipMethod,createdBy:OF.by,address:(OF.addr||'').trim(),urgent:!!OF.urgent,items:lines.map(l=>({productId:l.p,qty:l.q,unit:l.u,useStock:!!l.s}))}).then(r=>{(r.ids||[]).forEach(i=>S.mineO.add(+i));return r}),
