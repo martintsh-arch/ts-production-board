@@ -257,16 +257,33 @@ const wrap = (fn) => (req, res) =>
 
 /* ---------- app ---------- */
 const app = express();
+app.set('trust proxy', 1); // Render 在前面有一層代理，才拿得到真實 IP（防暴力破解用）
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  // 資安標頭：禁止被嵌入別的網站、禁止猜檔案類型、不送出來源網址、不讓搜尋引擎收錄、API 回應不被快取
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
+  if (/^\/(api|driver-api)\//.test(req.path)) res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+app.get('/robots.txt', (req, res) => res.type('text/plain').send('User-agent: *\nDisallow: /\n'));
 app.use(express.json({ limit: '3mb' }));
 
 app.get('/healthz', (req, res) => res.send('ok'));
 
-// optional shared PIN
+// 看板共用 PIN：比對不洩漏時間差；同一個 IP 10 分鐘內錯 10 次就先鎖住；PIN 只收 header，不收網址參數（網址會留在紀錄裡）
+const pinFails = new Map();
+function samePin(a, b) { a = String(a || ''); b = String(b || ''); let d = a.length ^ b.length; for (let i = 0; i < Math.max(a.length, b.length); i++) d |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0); return d === 0; }
+setInterval(() => { const now = Date.now(); for (const [k, v] of pinFails) if (now - v.t > 10 * 60 * 1000) pinFails.delete(k); }, 5 * 60 * 1000).unref();
 app.use('/api', (req, res, next) => {
   if (!APP_PIN) return next();
   if (req.path === '/auth-required') return next();
-  const pin = req.get('x-pin') || req.query.pin;
-  if (pin === APP_PIN) return next();
+  const ip = req.ip || 'x', f = pinFails.get(ip), live = f && Date.now() - f.t < 10 * 60 * 1000;
+  if (samePin(req.get('x-pin'), APP_PIN)) { if (live && f.n < 10) pinFails.delete(ip); return next(); }
+  if (live && f.n >= 10) return res.status(429).json({ error: '輸入錯誤太多次，請 10 分鐘後再試' });
+  if (req.get('x-pin')) pinFails.set(ip, { n: (live ? f.n : 0) + 1, t: Date.now() });
   res.status(401).json({ error: 'pin' });
 });
 app.get('/api/auth-required', (req, res) => res.json({ required: !!APP_PIN }));
