@@ -1375,7 +1375,7 @@ $('#v-orders').addEventListener('change',e=>{
 });
 $('#v-orders').addEventListener('submit',async e=>{
   e.preventDefault();
-  const err=m=>{$('#oerr').textContent=m};
+  const err=m=>{$('#oerr').textContent=m;toast(m)};
   const id=S.editOrder;
   const customer=resolveCustomer(OF.cust),shipDate=OF.date,note=OF.note.trim(),shipMethod=OF.method||'';
   if(!customer)return err('請輸入客戶名稱');
