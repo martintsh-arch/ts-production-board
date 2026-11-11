@@ -654,6 +654,7 @@ function startPolling(){refresh(true);clearInterval(pollT);pollT=setInterval(()=
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh(false)});
 
 function showPin(){
+  clearInterval(pollT);
   if($('#pinbox'))return;
   $('#modal').innerHTML='<div class="scrim"><form class="sheet" id="pinbox" style="border-radius:18px;align-self:center;max-width:420px"><div class="pname">請輸入公司密碼</div><input id="pinin" class="mono" type="password" autocapitalize="off" autocorrect="off" autocomplete="off" style="font-size:24px"><div class="err" id="pinerr"></div><button class="primary" type="submit">進入</button></form></div>';
   $('#pinin').focus();
@@ -1422,13 +1423,16 @@ function renderRecords(){
   const v=$('#v-records'),q=S.q.trim().toLowerCase();
   const rows=S.done.filter(t=>!q||[t.lot,t.customer,t.productName,t.operator,t.shipMethod,(t.matDate||'')+(t.matArr||''),(t.contents||[]).map(c=>c.lot+' '+c.name).join(' ')].join(' ').toLowerCase().includes(q));
   let h='<header class="pg-head"><h1>生產紀錄</h1><p>用批號、客戶或原料批反查，每一筆都有完成時間與操作人</p></header><div class="row rec-bar"><input id="rq" placeholder="搜尋批號、客戶、品項、原料批（例：0913B）" value="'+esc(S.q)+'" style="flex:1;min-width:220px">'+
-    '<a class="btnlink" href="/api/export.csv'+(S.pin?'?pin='+encodeURIComponent(S.pin):'')+'">匯出 Excel（CSV）</a></div>';
+    '<button class="btnlink" id="rexp" type="button">匯出 Excel（CSV）</button></div>';
   if(!S.done.length)h+='<div class="empty"><b>還沒有生產紀錄</b>在看板上按「完成生產」後，紀錄會出現在這裡，可以用批號回查。</div>';
   else h+='<p class="hint">共 '+rows.length+' 筆</p><div class="tbl-wrap"><table><thead><tr><th>完成時間</th><th>批號</th><th>品項</th><th>數量</th><th>客戶</th><th>出貨日</th><th>出貨方式</th><th>操作人</th><th></th></tr></thead><tbody>'+rows.map(t=>
    '<tr><td class="mono">'+fmtTime(t.completedAt)+'</td><td class="lotcell">'+(t.contents?t.contents.map(c=>'<div><span class="stamp sm">'+esc(c.lot)+'</span> <span class="hint" style="font-family:var(--f-body);font-weight:400">'+esc(shortName(c.name))+'　'+esc(c.date.slice(5).replace('-','/'))+'</span></div>').join(''):(t.shipLots&&t.shipLots.length?t.shipLots.map(x=>'<div><span class="stamp sm">'+esc(x.lot)+'</span> <span class="hint" style="font-family:var(--f-body);font-weight:400">×'+num(x.qty)+'　'+(x.expiry?'效期 '+esc(x.expiry.replace(/-/g,'/')):'效期未填')+'</span></div>').join(''):'<span class="stamp">'+esc(t.lot)+'</span>'))+(t.lotHistory&&t.lotHistory.length?'<div class="hint">曾修改 '+t.lotHistory.length+' 次</div>':'')+'</td><td>'+esc(t.productName)+'</td><td class="mono">'+qtyU(t)+(t.orderedQty&&t.orderedQty!==t.qty?'<div class="hint">訂單 '+num(t.orderedQty)+'</div>':'')+'</td><td>'+esc(t.customer)+'</td><td class="mono">'+esc(t.shipDate)+'</td><td>'+(t.shipMethod?methodPill(t):'<span class="hint">—</span>')+'</td><td>'+esc(t.operator)+'</td>'+
    '<td>'+(t.contents?'<span class="pill p-box">禮盒</span>':'<button data-rlot="'+t.id+'">改批號</button>')+(t.deliveryStatus==='delivered'||t.deliveryStatus==='failed'?'':' <button data-rmeth="'+t.id+'">改出貨方式</button>')+'</td></tr>').join('')+'</tbody></table></div>';
   v.innerHTML=h;
 }
+$('#v-records').addEventListener('click',async e=>{if(!e.target.closest('#rexp'))return;
+  try{const r=await fetch('/api/export.csv',{headers:{'X-PIN':S.pin}});if(r.status===401){showPin();return}if(!r.ok)throw new Error();
+    const u=URL.createObjectURL(await r.blob()),a=document.createElement('a');a.href=u;a.download='生產紀錄.csv';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000)}catch(_){toast('匯出失敗，請再試一次')}});
 $('#v-records').addEventListener('input',e=>{if(e.target.id==='rq'){S.q=e.target.value;const pos=e.target.selectionStart;renderRecords();const n=$('#rq');n.focus();n.setSelectionRange(pos,pos)}});
 let MM=null;
 function drawMeth(){
