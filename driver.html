@@ -180,7 +180,14 @@ function render(){
 }
 function showSheet(html){$('#modal').innerHTML='<div class="scrim" id="scrim"><div class="sheet">'+html+'</div></div>'}
 function stopByName(n){return C.mine.find(s=>s.customer===n)}
+let AC=null;
+function chime(kind){try{AC=AC||new (window.AudioContext||window.webkitAudioContext)();if(AC.state==='suspended')AC.resume();
+  const seq=kind==='ok'?[[392,0],[523.25,.12],[659.25,.24],[783.99,.36]]:[[440,0],[330,.18]];
+  seq.forEach(([f,t0])=>{const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime+t0;o.type=kind==='ok'?'sine':'triangle';o.frequency.value=f;
+    g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.2,t+.02);g.gain.exponentialRampToValueAtTime(.0001,t+.5);o.connect(g);g.connect(AC.destination);o.start(t);o.stop(t+.55)});
+  if(kind==='ok'&&navigator.vibrate)navigator.vibrate([120,60,120])}catch(e){}}
 async function act(path,body,label){
+  if(path==='/done')chime('ok');else if(path==='/fail')chime('bad');
   const b={...body,driver:DRV,at:new Date().toISOString()};
   mark(b.taskIds,path,b.at,DRV,b.issue);
   lastUndo={label:label,ids:b.taskIds,t:Date.now()};setTimeout(()=>{if(lastUndo&&lastUndo.ids===b.taskIds){lastUndo=null;render()}},15*60000);
