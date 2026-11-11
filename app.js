@@ -59,6 +59,8 @@ const Snd={ctx:null,on:store.get('tsb_snd')!=='0',
     v.gain.setValueAtTime(0.0001,t);v.gain.exponentialRampToValueAtTime(g||.15,t+.02);v.gain.exponentialRampToValueAtTime(.0001,t+d);o.connect(v);v.connect(c.destination);o.start(t);o.stop(t+d+.05)},
   play(kind){if(!this.on)return;this.unlock();if(!this.ctx)return;try{
     if(kind==='done'){[523.25,659.25,783.99,1046.5].forEach((f,i)=>this.tone(f,i*.085,.55,'triangle',.17));this.tone(1568,.36,.7,'sine',.06)}
+    else if(kind==='deliver'){[392,523.25,659.25,783.99].forEach((f,i)=>this.tone(f,i*.13,.5,'sine',.16));[523.25,659.25,783.99,1046.5].forEach(f=>this.tone(f,.62,.9,'triangle',.09))}
+    else if(kind==='fail'){this.tone(440,0,.28,'sawtooth',.07);this.tone(330,.2,.5,'sawtooth',.07)}
     else if(kind==='notify'){this.tone(987.77,0,.3,'sine',.14);this.tone(1318.5,.13,.55,'sine',.12)}
     else if(kind==='tap'){this.tone(740,0,.09,'sine',.06)}
     else if(kind==='add'){this.tone(587.33,0,.12,'triangle',.1);this.tone(880,.08,.18,'triangle',.1)}
@@ -590,12 +592,12 @@ function celebrate(title,sub,lots){
   const close=()=>{if(box.classList.contains('out'))return;box.classList.add('out');setTimeout(()=>box.remove(),350)};
   box.addEventListener('click',close);setTimeout(close,3400);
 }
-function notifyBanner(lines,speech){
+function notifyBanner(lines,speech,snd){
   let wrap=$('#notes');if(!wrap){wrap=document.createElement('div');wrap.id='notes';document.body.appendChild(wrap)}
   lines.forEach(l=>{const n=document.createElement('div');n.className='note';n.setAttribute('role','status');
     n.innerHTML='<span class="note-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg></span><div style="min-width:0"><b>已完成生產</b><div class="note-t">'+esc(l)+'</div></div><button type="button" aria-label="關閉通知">×</button>';
     n.querySelector('button').onclick=()=>n.remove();wrap.prepend(n);setTimeout(()=>{n.classList.add('out');setTimeout(()=>n.remove(),400)},12000)});
-  Snd.play('notify');
+  Snd.play(snd||'notify');
   if(speech&&speech.length)setTimeout(()=>speech.forEach(t=>Voice.say(t)),650);
 }
 function detectRemoteDone(done){
@@ -627,7 +629,7 @@ function detectDelivery(done){
   const ok=g=>g[0].deliveryStatus==='delivered';
   if(S.tv){tvFlood(gs.map(g=>({k:ok(g)?'配送完成':'配送異常',customer:g[0].customer,product:its(g),lot:ok(g)?who(g):(g[0].deliveryIssue||'')+'　'+who(g),say:spokenName(g[0].customer)+(ok(g)?'，已配送完成':'，配送發生異常')})));return}
   notifyBanner(gs.map(g=>(ok(g)?'🚚 配送完成｜':'⚠ 配送異常｜')+g[0].customer+'｜'+its(g)+'｜'+(ok(g)?'':(g[0].deliveryIssue||'')+'｜')+who(g)),
-    gs.map(g=>spokenName(g[0].customer)+(ok(g)?'，已配送完成':'，配送發生異常')));
+    gs.map(g=>spokenName(g[0].customer)+(ok(g)?'，已配送完成':'，配送發生異常')),gs.some(ok)?'deliver':'fail');
 }
 
 /* ---------- api ---------- */
@@ -746,7 +748,7 @@ function flNext(){const it=FLQ.shift();if(!it){flBusy=false;return}flBusy=true;
   const el=document.createElement('div');el.className='flood';el.setAttribute('role','status');
   el.innerHTML='<div class="fl-honey"><svg class="fl-wave" viewBox="0 0 1200 60" preserveAspectRatio="none" aria-hidden="true"><path d="M0 30 Q150 0 300 30 T600 30 T900 30 T1200 30 V60 H0Z"/></svg></div>'+
     '<div class="fl-text"><div class="fl-k">'+esc(it.k||'完成生產')+'</div><div class="fl-c">'+esc(it.customer)+'</div><div class="fl-p">'+esc(it.product)+'</div><div class="fl-l">'+esc(it.lot)+'</div></div>';
-  document.body.appendChild(el);Snd.play('done');setTimeout(()=>Voice.say(it.say||spokenName(it.customer)+'，已完成生產'),700);
+  document.body.appendChild(el);Snd.play(it.k==='配送完成'?'deliver':it.k==='配送異常'?'fail':'done');setTimeout(()=>Voice.say(it.say||spokenName(it.customer)+'，已完成生產'),700);
   setTimeout(()=>el.classList.add('out'),4200);setTimeout(()=>{el.remove();flNext()},5200)}
 function renderBoard(){
   if(dragging)return;
