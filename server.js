@@ -156,6 +156,8 @@ async function migrate() {
     );
     CREATE INDEX IF NOT EXISTS stock_moves_pl ON stock_moves (product_id, lot);
     ALTER TABLE stock_moves ADD COLUMN IF NOT EXISTS expiry TEXT NOT NULL DEFAULT '';
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS pack_size INT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS base_unit TEXT;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ship_lots JSONB NOT NULL DEFAULT '[]';
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS from_stock BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS use_stock BOOLEAN NOT NULL DEFAULT FALSE;
@@ -660,11 +662,17 @@ async function geoTick() {
 const UNITS = ['桶', '箱', '瓶'];
 /* free stock = ledger balance minus what other open "use stock" orders have already claimed */
 async function stockFree(db, productId, unit, excludeId) {
-  const { rows } = await db.query(
-    `SELECT (SELECT COALESCE(SUM(qty),0) FROM stock_moves WHERE product_id=$1 AND unit=$2)
-          - (SELECT COALESCE(SUM(qty),0) FROM tasks WHERE status='open' AND use_stock AND product_id=$1 AND unit=$2 AND id<>$3) AS free`,
-    [productId, unit || '', excludeId || 0]);
-  return Number(rows[0].free);
+  // stock is kept in the small unit (桶/瓶); an order in 箱 is converted with the product's pack size (一箱幾桶)
+  const { rows: pr } = await db.query('SELECT pack_size, base_unit FROM products WHERE id=$1', [productId]);
+  const p = pr[0] || {};
+  unit = unit || '';
+  let ku = unit, f = 1;
+  if (unit === '箱') { if (!p.pack_size || !p.base_unit) return 0; ku = p.base_unit; f = p.pack_size; }
+  const bal = Number((await db.query(`SELECT COALESCE(SUM(qty),0) AS n FROM stock_moves WHERE product_id=$1 AND unit=$2`, [productId, ku])).rows[0].n);
+  const { rows: rs } = await db.query(`SELECT unit, SUM(qty)::int AS n FROM tasks WHERE status='open' AND use_stock AND product_id=$1 AND id<>$2 GROUP BY unit`, [productId, excludeId || 0]);
+  let res = 0;
+  for (const r of rs) { if ((r.unit || '') === ku) res += r.n; else if (r.unit === '箱' && p.pack_size && p.base_unit === ku) res += r.n * p.pack_size; }
+  return Math.floor((bal - res) / f);
 }
 const SHIP_METHODS = ['門市自取', '公司配送', '物流配送'];
 async function readOrderBody(b) {
@@ -816,18 +824,53 @@ const LOT_RE = /^[A-Z0-9]{2,20}(-[A-Z0-9]{1,4})?$/;
 const NO_LOT = '無批號';
 // finished-goods stock: extra pieces made on top of an order go here, with the lot they were made under
 const parseExtra = (v) => Math.max(0, Math.min(100000, parseInt(v, 10) || 0));
-function extraExpiry(b) {
+function addMonthsISO(iso, m) {
+  const [y, mo, d] = iso.split('-').map(Number);
+  const first = new Date(Date.UTC(y, mo - 1 + m, 1));
+  const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+  first.setUTCDate(Math.min(d, last));
+  return first.toISOString().slice(0, 10);
+}
+// expiry of extra goods: the date typed in, otherwise production day + the default shelf life from settings (24 months)
+async function defaultExpiry(client, fromISO) {
+  const cfg = await getConfig(client);
+  const m = Math.max(1, Math.min(120, parseInt(cfg.shelfMonths, 10) || 24));
+  return addMonthsISO(fromISO || taipeiDate(new Date()), m);
+}
+async function extraExpiry(b, client) {
   if (!parseExtra(b.extra)) return '';
   const e = str(b.extraExpiry, 10);
-  if (!isDate(e)) throw new UserError('多做的數量要填有效日期');
-  return e;
+  if (e && !isDate(e)) throw new UserError('有效日期格式不對');
+  return e || defaultExpiry(client);
 }
-async function stockIn(client, t, lot, extra, operator, expiry) {
+function parsePack(b) {
+  const p = b && b.pack;
+  if (!p) return null;
+  const size = parseInt(p.size, 10), base = str(p.base, 4);
+  if (!(size >= 2 && size <= 1000) || !['桶', '瓶'].includes(base)) throw new UserError('一箱的入數要填 2 以上的數字，並選桶或瓶');
+  return { size, base };
+}
+// order unit -> ledger unit and quantity. 箱 needs the pack size (saved on the product the first time it is given)
+async function toLedger(client, productId, unit, qty, pack) {
+  const { rows } = await client.query('SELECT pack_size, base_unit FROM products WHERE id=$1 FOR UPDATE', [productId]);
+  const p = rows[0] || {};
+  unit = unit || '';
+  if (unit === '箱') {
+    let ps = p.pack_size, bu = p.base_unit;
+    if (pack) { ps = pack.size; bu = pack.base; await client.query('UPDATE products SET pack_size=$1, base_unit=$2 WHERE id=$3', [ps, bu, productId]); }
+    if (!ps || !bu) throw new UserError('這個品項還沒設定「一箱幾桶（瓶）」，請先填一箱的入數');
+    return { unit: bu, qty: qty * ps };
+  }
+  if (unit && !p.base_unit) await client.query('UPDATE products SET base_unit=$1 WHERE id=$2', [unit, productId]);
+  return { unit, qty };
+}
+async function stockIn(client, t, lot, extra, operator, expiry, pack, note) {
   if (!extra) return;
+  const L = await toLedger(client, t.product_id, t.unit, extra, pack);
   await client.query(
     `INSERT INTO stock_moves (product_id, product_name, unit, lot, expiry, qty, kind, task_id, customer, operator, note)
      VALUES ($1,$2,$3,$4,$5,$6,'make',$7,$8,$9,$10)`,
-    [t.product_id, t.product_name, t.unit || '', lot, expiry || '', extra, t.id, t.customer, operator, '多做轉庫存']);
+    [t.product_id, t.product_name, L.unit, lot, expiry || '', L.qty, t.id, t.customer, operator, note || '多做轉庫存']);
 }
 const LOT_FMT = '批號格式不對（英文與數字，例如 HP101-A 或 HS0913B-F）';
 function isAuto(cfg, cat) { return !!(cfg.cats[cat] && cfg.cats[cat].auto); }
@@ -1043,7 +1086,7 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
           [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']);
       }
-      await stockIn(client, t, lotText, parseExtra(b.extra), operator, extraExpiry(b));
+      await stockIn(client, t, lotText, parseExtra(b.extra), operator, await extraExpiry(b, client), parsePack(b));
       await bump(client);
       await client.query('COMMIT');
       return res.json({ lot: lotText, lots: contents.map((c) => c.name + ' ' + c.lot), rest, box: true, extra: parseExtra(b.extra) });
@@ -1063,7 +1106,7 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
           [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']);
       }
       await client.query('UPDATE products SET no_lot=TRUE WHERE id=$1', [t.product_id]);
-      await stockIn(client, t, NO_LOT, parseExtra(b.extra), operator, extraExpiry(b));
+      await stockIn(client, t, NO_LOT, parseExtra(b.extra), operator, await extraExpiry(b, client), parsePack(b));
       await bump(client);
       await client.query('COMMIT');
       return res.json({ lot: NO_LOT, lots: [NO_LOT + ' ×' + qty], rest, noLot: true, extra: parseExtra(b.extra) });
@@ -1130,7 +1173,7 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
         [t.customer, t.product_id, t.product_name, t.cat, t.variety, rest, t.ordered_qty || t.qty, t.ship_date, t.note, t.sort_order, t.id, t.unit || '']
       );
     }
-    await stockIn(client, t, done.length ? done[done.length - 1].split(' ×')[0] : '', parseExtra(b.extra), operator, extraExpiry(b));
+    await stockIn(client, t, done.length ? done[done.length - 1].split(' ×')[0] : '', parseExtra(b.extra), operator, await extraExpiry(b, client), parsePack(b));
     await bump(client);
     await client.query('COMMIT');
     res.json({ lot: done.map((d) => d.split(' ×')[0]).join('、'), lots: done, rest, extra: parseExtra(b.extra) });
@@ -1152,8 +1195,13 @@ app.post('/api/stock/use', wrap(async (req, res) => {
     const t = rows[0];
     if (!t || t.status !== 'open') throw new UserError('這筆已經完成或取消了，請重新整理');
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['stock' + t.product_id]);
-    const { rows: bals } = await client.query(
-      `SELECT lot, expiry, SUM(qty)::int AS n FROM stock_moves WHERE product_id=$1 AND unit=$2 GROUP BY lot, expiry HAVING SUM(qty) > 0 ORDER BY (expiry = ''), expiry, MIN(created_at)`, [t.product_id, t.unit || '']);
+    // ledger is in the small unit; a 箱 order draws whole boxes (pack size) from each batch
+    const { rows: pr } = await client.query('SELECT pack_size, base_unit FROM products WHERE id=$1', [t.product_id]);
+    let ku = t.unit || '', f = 1;
+    if (ku === '箱') { if (!pr[0] || !pr[0].pack_size || !pr[0].base_unit) throw new UserError('這個品項還沒設定「一箱幾桶（瓶）」'); ku = pr[0].base_unit; f = pr[0].pack_size; }
+    const { rows: rawBals } = await client.query(
+      `SELECT lot, expiry, SUM(qty)::int AS n FROM stock_moves WHERE product_id=$1 AND unit=$2 GROUP BY lot, expiry HAVING SUM(qty) > 0 ORDER BY (expiry = ''), expiry, MIN(created_at)`, [t.product_id, ku]);
+    const bals = rawBals.map((r) => ({ lot: r.lot, expiry: r.expiry, n: Math.floor(r.n / f) })).filter((r) => r.n > 0);
     const take = new Map(); // "lot|expiry" -> qty
     const addTake = (lot, expiry, q) => { const k = lot + '|' + expiry; take.set(k, (take.get(k) || 0) + q); };
     for (const w of want) {
@@ -1178,7 +1226,7 @@ app.post('/api/stock/use', wrap(async (req, res) => {
       await client.query(
         `INSERT INTO stock_moves (product_id, product_name, unit, lot, expiry, qty, kind, task_id, customer, operator, note)
          VALUES ($1,$2,$3,$4,$5,$6,'use',$7,$8,$9,$10)`,
-        [t.product_id, t.product_name, t.unit || '', x.lot, x.expiry, -x.qty, t.id, t.customer, operator, '庫存出貨']);
+        [t.product_id, t.product_name, ku, x.lot, x.expiry, -x.qty * f, t.id, t.customer, operator, '庫存出貨']);
     }
     const rest = t.qty - total;
     if (rest > 0) {
@@ -1199,21 +1247,62 @@ app.post('/api/stock/in', wrap(async (req, res) => {
   const operator = str(b.operator, 50), unit = str(b.unit, 10), lot = str(b.lot, 60).toUpperCase().replace(/\s/g, ''), expiry = str(b.expiry, 10);
   const qty = parseInt(b.qty, 10), pid = parseInt(b.productId, 10);
   if (!operator) throw new UserError('請先點選操作人');
+  if (!UNITS.includes(unit)) throw new UserError('請選擇單位（桶、箱、瓶）');
   if (!(lot === NO_LOT || LOT_RE.test(lot))) throw new UserError('請填批號：英文與數字，例如 HP101-A（沒有批號請填「無批號」）');
-  if (!isDate(expiry)) throw new UserError('請選擇有效日期');
+  if (expiry && !isDate(expiry)) throw new UserError('有效日期格式不對');
   if (!qty || qty < 1 || qty > 100000) throw new UserError('入庫數量要大於 0');
+  const pack = parsePack(b);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['stock' + pid]);
     const pr = await client.query('SELECT name FROM products WHERE id=$1', [pid]);
     if (!pr.rows[0]) throw new UserError('找不到這個品項');
+    const L = await toLedger(client, pid, unit, qty, pack);
     await client.query(
       `INSERT INTO stock_moves (product_id, product_name, unit, lot, expiry, qty, kind, operator, note) VALUES ($1,$2,$3,$4,$5,$6,'make',$7,$8)`,
-      [pid, pr.rows[0].name, unit, lot, expiry, qty, operator, str(b.note, 100) || '直接入庫']);
+      [pid, pr.rows[0].name, L.unit, lot, expiry || await defaultExpiry(client), L.qty, operator, str(b.note, 100) || '直接入庫']);
     await bump(client);
     await client.query('COMMIT');
     res.json({ ok: true });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+// set how many 桶/瓶 are in one 箱 for a product (asked once, remembered)
+app.post('/api/products/:id/pack', wrap(async (req, res) => {
+  const pack = parsePack(req.body || {});
+  if (!pack) throw new UserError('請填一箱的入數');
+  const { rowCount } = await pool.query('UPDATE products SET pack_size=$1, base_unit=$2 WHERE id=$3', [pack.size, pack.base, req.params.id]);
+  if (!rowCount) throw new UserError('找不到這個品項');
+  await bump();
+  res.json({ ok: true });
+}));
+
+// a finished order that is not going out (customer cancelled / took less): move the goods into stock, keep the lot
+app.post('/api/tasks/:id/to-stock', wrap(async (req, res) => {
+  const b = req.body || {};
+  const operator = str(b.operator, 50);
+  if (!operator) throw new UserError('請先點選操作人');
+  const expiryIn = str(b.expiry, 10);
+  if (expiryIn && !isDate(expiryIn)) throw new UserError('有效日期格式不對');
+  const pack = parsePack(b);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE', [req.params.id]);
+    const t = rows[0];
+    if (!t || t.status !== 'done') throw new UserError('只有已完成的訂單可以轉成庫存');
+    if (t.from_stock) throw new UserError('這張單本來就是用庫存出貨的');
+    if (t.delivery_status === 'delivered' || t.delivery_status === 'failed') throw new UserError('這張單已經配送過了，不能轉庫存');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['stock' + t.product_id]);
+    const dup = await client.query(`SELECT 1 FROM stock_moves WHERE task_id=$1 AND kind='make' AND note LIKE '訂單轉庫存%'`, [t.id]);
+    if (dup.rowCount) throw new UserError('這張單已經轉過庫存了');
+    const expiry = expiryIn || await defaultExpiry(client, t.completed_at ? taipeiDate(new Date(t.completed_at)) : null);
+    await stockIn(client, t, t.lot || NO_LOT, t.qty, operator, expiry, pack, '訂單轉庫存（' + t.customer + '）');
+    await client.query(`UPDATE tasks SET delivery_status='legacy', note=TRIM(COALESCE(note,'') || ' 【已轉庫存】') WHERE id=$1`, [t.id]);
+    await bump(client);
+    await client.query('COMMIT');
+    res.json({ ok: true, qty: t.qty, unit: t.unit || '' });
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
