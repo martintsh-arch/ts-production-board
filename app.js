@@ -820,7 +820,24 @@ $('#v-board').addEventListener('keydown',e=>{if(S.pick&&(e.key===' '||e.key==='E
 
 /* ---------- finished-goods stock ---------- */
 const expKey=x=>x.expiry||'9999-99-99';
-const stockOf=t=>(S.stock||[]).filter(x=>x.productId===t.productId&&x.unit===(t.unit||'')).sort((a,b)=>expKey(a).localeCompare(expKey(b))||a.lot.localeCompare(b.lot));
+/* stock is kept in the small unit (桶/瓶); 箱 orders convert with the product's pack size (一箱幾桶) */
+const prodOf=pid=>(S.products||[]).find(p=>String(p.id)===String(pid))||{};
+const packOf=pid=>{const p=prodOf(pid);return p.pack_size&&p.base_unit?{size:p.pack_size,base:p.base_unit}:null};
+const stockOf=t=>{const unit=t.unit||'',pk=packOf(t.productId);let ku=unit,f=1;if(unit==='箱'){if(!pk)return [];ku=pk.base;f=pk.size}
+  return (S.stock||[]).filter(x=>x.productId===t.productId&&x.unit===ku).map(x=>({...x,qty:Math.floor(x.qty/f),unit})).filter(x=>x.qty>0).sort((a,b)=>expKey(a).localeCompare(expKey(b))||a.lot.localeCompare(b.lot))};
+const guessBase=pid=>{const p=prodOf(pid),c={};(S.open||[]).concat(S.done||[]).forEach(t=>{if(String(t.productId)===String(pid)&&(t.unit==='桶'||t.unit==='瓶'))c[t.unit]=(c[t.unit]||0)+1});
+  return (c['瓶']||0)>(c['桶']||0)?'瓶':(c['桶']||0)>0?'桶':(/瓶|\d+\s*g\b/i.test(p.name||'')?'瓶':'桶')};
+const addMonthsISO=(iso,m)=>{const [y,mo,d]=iso.split('-').map(Number),f=new Date(Date.UTC(y,mo-1+m,1)),last=new Date(Date.UTC(f.getUTCFullYear(),f.getUTCMonth()+1,0)).getUTCDate();f.setUTCDate(Math.min(d,last));return f.toISOString().slice(0,10)};
+const shelfMonths=()=>Math.max(1,Math.min(120,parseInt(cfg().shelfMonths,10)||24));
+const autoExp=()=>addMonthsISO(today(),shelfMonths());
+/* ask once how many 桶/瓶 are in a 箱; the answer is saved on the product */
+function packInline(pid,st){
+  if(packOf(pid))return '';
+  st.pk=st.pk||{size:'',base:guessBase(pid)};
+  return '<div class="sec pk-sec"><div class="lbl">這個品項一箱有幾桶／瓶？（只問這一次，之後系統會記住）</div><div class="row" style="flex-wrap:nowrap;align-items:center"><span class="hint">一箱＝</span><input class="mono" id="pk-size" type="number" inputmode="numeric" min="2" value="'+esc(st.pk.size)+'" style="width:90px;font-size:22px"><span class="chips">'+['桶','瓶'].map(u=>'<button type="button" class="chip" data-pkb="'+u+'" aria-pressed="'+(st.pk.base===u)+'">'+u+'</button>').join('')+'</span></div></div>'}
+function packBody(pid,st,need){if(!need||packOf(pid))return {};const k=st&&st.pk;if(!k||!(parseInt(k.size,10)>=2))return null;return {pack:{size:parseInt(k.size,10),base:k.base}}}
+$('#modal').addEventListener('input',e=>{if(e.target.id!=='pk-size')return;const st=F||N||TS;if(st&&st.pk)st.pk.size=e.target.value});
+$('#modal').addEventListener('click',e=>{const b=e.target.closest('button[data-pkb]');if(!b)return;const st=F||N||TS;if(!st||!st.pk)return;st.pk.base=b.dataset.pkb;if(F)drawFinish();else if(N)drawIn();else drawTS()});
 function expTag(e){
   if(!e)return '<span class="mono" style="color:var(--red)">效期未填</span>';
   const d=Math.round((new Date(e+'T00:00:00+08:00')-new Date(today()+'T00:00:00+08:00'))/864e5);
@@ -830,20 +847,28 @@ function stockGroups(q){
   const rs=(S.stock||[]).filter(x=>!q||(x.name+' '+x.lot+' '+x.expiry).toLowerCase().includes(q));
   const g={};rs.forEach(x=>{const k=x.productId+'|'+x.unit;(g[k]=g[k]||{name:x.name,unit:x.unit,pid:x.productId,rows:[]}).rows.push(x)});
   return Object.values(g).sort((a,b)=>a.name.localeCompare(b.name,'zh-Hant')).map(o=>{o.rows.sort((a,b)=>expKey(a).localeCompare(expKey(b))||a.lot.localeCompare(b.lot));o.total=o.rows.reduce((s,x)=>s+x.qty,0);
-    o.resv=(S.open||[]).filter(t=>t.useStock&&t.productId===o.pid&&(t.unit||'')===o.unit).reduce((s,t)=>s+t.qty,0);return o});
+    const pk=packOf(o.pid);o.pk=pk&&pk.base===o.unit?pk:null;
+    o.resv=(S.open||[]).filter(t=>t.useStock&&t.productId===o.pid).reduce((s,t)=>{const u=t.unit||'';return s+(u===o.unit?t.qty:(u==='箱'&&o.pk?t.qty*o.pk.size:0))},0);return o});
 }
 function stockListHTML(q,edit){
   const gs=stockGroups(q);if(!gs.length)return '<div class="empty"><b>'+(q?'找不到符合的庫存':'目前沒有成品庫存')+'</b></div>';
-  return gs.map(o=>'<div style="margin:14px 0 4px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>'+esc(shortName(o.name))+'</b><span class="hint">合計 <b class="mono">'+num(o.total)+'</b>'+esc(o.unit)+(o.resv?'　訂單已預留 <b class="mono">'+num(o.resv)+'</b>　可用 <b class="mono">'+num(o.total-o.resv)+'</b>':'')+'</span></div>'+
+  return gs.map(o=>'<div style="margin:14px 0 4px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>'+esc(shortName(o.name))+'</b><span class="hint">合計 <b class="mono">'+num(o.total)+'</b>'+esc(o.unit)+(o.pk&&o.total>=o.pk.size?'（約 '+Math.floor(o.total/o.pk.size)+' 箱'+(o.total%o.pk.size?' ＋ '+(o.total%o.pk.size)+esc(o.unit):'')+'）':'')+(o.resv?'　訂單已預留 <b class="mono">'+num(o.resv)+'</b>　可用 <b class="mono">'+num(o.total-o.resv)+'</b>':'')+'</span></div>'+
     o.rows.map(x=>'<div class="srow"><span class="s-main"><b class="mono">'+esc(x.lot)+'</b>'+expTag(x.expiry)+'</span><span class="s-qty mono">'+num(x.qty)+'<small>'+esc(x.unit)+'</small></span>'+
       (edit?'<span style="display:flex;gap:6px"><button type="button" data-stockexp="1" data-pid="'+x.productId+'" data-lot="'+esc(x.lot)+'" data-unit="'+esc(x.unit)+'" data-exp="'+esc(x.expiry)+'">'+(x.expiry?'改效期':'填效期')+'</button><button type="button" data-stockadj="1" data-pid="'+x.productId+'" data-lot="'+esc(x.lot)+'" data-unit="'+esc(x.unit)+'" data-exp="'+esc(x.expiry)+'">調整／報廢</button></span>':'')+'</div>').join('')).join('');
 }
+function expWarn(){
+  const lim=addMonthsISO(today(),3),bad=(S.stock||[]).filter(x=>x.qty>0&&(!x.expiry||x.expiry<=lim)).sort((a,b)=>expKey(a).localeCompare(expKey(b)));
+  if(!bad.length)return '';
+  return '<div class="panel" style="border-left:4px solid #e0a030;margin:10px 0"><b>⚠ 有 '+bad.length+' 批庫存要注意（已過期、3 個月內到期或沒填效期）</b>'+bad.slice(0,6).map(x=>'<div class="hint" style="margin-top:4px">'+esc(shortName(x.name))+'　<b class="mono">'+esc(x.lot)+'</b>　'+num(x.qty)+esc(x.unit)+'　'+expTag(x.expiry)+'</div>').join('')+(bad.length>6?'<div class="hint">…還有 '+(bad.length-6)+' 批，請看下方庫存清單</div>':'')+'</div>'}
 function stockView(){
   if(!(S.stock||[]).length)return '';
   return '<header class="pg-head" style="margin-top:28px"><h1>庫存查詢</h1><p>目前成品庫存的批號、有效日期與各批剩餘數量，開出貨單前可以直接在這裡查</p></header>'+
-    '<input id="o-sq" placeholder="搜尋品名或批號" value="'+esc(S.stockQ||'')+'" style="margin-bottom:6px"><div id="sv-list" class="stock-list">'+stockListHTML((S.stockQ||'').toLowerCase(),false)+'</div>';
+    expWarn()+'<input id="o-sq" placeholder="搜尋品名或批號" value="'+esc(S.stockQ||'')+'" style="margin-bottom:6px"><div id="sv-list" class="stock-list">'+stockListHTML((S.stockQ||'').toLowerCase(),false)+'</div>';
 }
-const stockFreeC=(pid,unit,exId)=>{const have=(S.stock||[]).filter(x=>String(x.productId)===String(pid)&&x.unit===(unit||'')).reduce((a,x)=>a+x.qty,0);const res=(S.open||[]).filter(t=>t.useStock&&String(t.productId)===String(pid)&&(t.unit||'')===(unit||'')&&t.id!==exId).reduce((a,t)=>a+t.qty,0);return have-res};
+const stockFreeC=(pid,unit,exId)=>{unit=unit||'';const pk=packOf(pid);let ku=unit,f=1;if(unit==='箱'){if(!pk)return 0;ku=pk.base;f=pk.size}
+  const have=(S.stock||[]).filter(x=>String(x.productId)===String(pid)&&x.unit===ku).reduce((a,x)=>a+x.qty,0);
+  const res=(S.open||[]).filter(t=>t.useStock&&String(t.productId)===String(pid)&&t.id!==exId).reduce((a,t)=>{const u=t.unit||'';return a+(u===ku?t.qty:(u==='箱'&&pk&&pk.base===ku?t.qty*pk.size:0))},0);
+  return Math.floor((have-res)/f)};
 /* ---------- delivery progress ---------- */
 const tpDay=iso=>new Date(iso).toLocaleDateString('sv-SE',{timeZone:'Asia/Taipei'});
 function deliveryPanel(){
@@ -873,6 +898,7 @@ function stockPanel(){
   const st=S.stock||[],log=(S.stockLog||[]).slice(0,8);
   const KIND={make:'入庫',use:'庫存出貨',adjust:'調整'};
   let h='<div class="bd-head bd-stock"><div><b>成品庫存</b><span>依批號與有效日期分批，訂單可直接用庫存出貨</span></div><div class="bd-act"><button type="button" id="stockin" class="ghost-btn">＋ 新增入庫</button></div></div>';
+  h+=expWarn();
   h+=st.length?'<div class="stock-list">'+stockListHTML('',true)+'</div>':'<div class="empty"><b>目前沒有成品庫存</b>完成生產時填「多做的數量」，或按「新增入庫」，就會出現在這裡。</div>';
   if(log.length)h+='<details class="stock-log"><summary>最近庫存異動</summary>'+log.map(x=>'<div class="lrow"><span class="mono">'+esc(fmtTime(x.at))+'</span><span>'+esc(KIND[x.kind]||x.kind)+'</span><span>'+esc(shortName(x.name))+'　'+esc(x.lot)+(x.expiry?'　效期 '+esc(x.expiry.replace(/-/g,'/')):'')+'</span><span class="mono '+(x.qty<0?'neg':'pos')+'">'+(x.qty>0?'+':'')+num(x.qty)+esc(x.unit)+'</span><span class="hint">'+esc(x.customer||x.note||'')+'　'+esc(x.operator)+'</span></div>').join('')+'</details>';
   return h;
@@ -938,22 +964,23 @@ function drawIn(){
   if(!fix)h+='<div class="sec"><label class="lbl" for="n-prod"><i class="sn">2</i>品項</label><select id="n-prod" style="font-size:18px"><option value="">請選擇品項</option>'+(S.products||[]).filter(p=>p.active!==false).map(p=>'<option value="'+p.id+'"'+(String(p.id)===String(N.pid)?' selected':'')+'>'+esc(p.name)+'</option>').join('')+'</select>'+
     '<div class="chips" style="margin-top:8px">'+UNITS.map(u=>'<button type="button" class="chip" data-nunit="'+u+'" aria-pressed="'+(N.unit===u)+'">'+u+'</button>').join('')+'</div></div>'+
     '<div class="sec"><label class="lbl" for="n-lot"><i class="sn">3</i>批號（沒有批號請填「無批號」）</label><input id="n-lot" class="mono" autocomplete="off" style="font-size:22px;text-transform:uppercase" value="'+esc(N.lot)+'"></div>';
-  h+='<div class="sec"><label class="lbl" for="n-exp"><i class="sn">'+(fix?'2':'4')+'</i>有效日期</label><input id="n-exp" type="date" style="font-size:22px" value="'+esc(N.exp)+'"></div>';
+  h+='<div class="sec"><label class="lbl" for="n-exp"><i class="sn">'+(fix?'2':'4')+'</i>有效日期'+(fix?'':'（不填：自動 '+esc(autoExp().replace(/-/g,'/'))+'）')+'</label><input id="n-exp" type="date" style="font-size:22px" value="'+esc(N.exp)+'"></div>';
+  if(!fix&&N.unit==='箱'&&N.pid)h+=packInline(+N.pid,N);
   if(!fix)h+='<div class="sec"><label class="lbl" for="n-qty"><i class="sn">5</i>實際入庫數量</label><div class="row" style="flex-wrap:nowrap"><input id="n-qty" class="mono" type="number" inputmode="numeric" min="1" style="font-size:22px;flex:1" value="'+esc(N.qty)+'"><span class="hint">'+esc(N.unit)+'</span></div></div>';
   h+='<div class="err">'+esc(N.err)+'</div><div class="row"><button type="button" id="ncancel" style="flex:1">取消</button><button type="button" id="nok" class="primary" style="flex:2;min-height:60px;font-size:18px"'+(N.busy?' disabled':'')+'>'+(N.busy?'儲存中…':(fix?'儲存有效日期':'確認入庫'))+'</button></div></div></div>';
   const sc=$('#nscrim')?$('.sheet').scrollTop:0;$('#modal').innerHTML=h;$('.sheet').scrollTop=sc;
 }
-$('#modal').addEventListener('input',e=>{if(!N)return;const i=e.target.id;if(i==='n-lot')N.lot=e.target.value.toUpperCase();else if(i==='n-exp')N.exp=e.target.value;else if(i==='n-qty')N.qty=e.target.value;else if(i==='n-prod')N.pid=e.target.value});
+$('#modal').addEventListener('input',e=>{if(!N)return;const i=e.target.id;if(i==='n-lot')N.lot=e.target.value.toUpperCase();else if(i==='n-exp')N.exp=e.target.value;else if(i==='n-qty')N.qty=e.target.value;else if(i==='n-prod'){N.pid=e.target.value;N.pk=null;if(N.unit==='箱')drawIn()}});
 $('#modal').addEventListener('click',async e=>{
   if(!N)return;
   if(e.target.id==='nscrim'||e.target.id==='ncancel'){N=null;$('#modal').innerHTML='';return}
   const b=e.target.closest('button');if(!b)return;
   if(b.dataset.nop!==undefined){N.operator=b.dataset.nop;N.err='';return drawIn()}
-  if(b.dataset.nunit!==undefined){N.unit=b.dataset.nunit;N.err='';return drawIn()}
+  if(b.dataset.nunit!==undefined){N.unit=b.dataset.nunit;N.err='';N.pk=null;return drawIn()}
   if(b.id!=='nok')return;
   const fail=m=>{N.err=m;drawIn()};
   if(!N.operator)return fail('請先點選操作人');
-  if(!N.exp)return fail('請選擇有效日期');
+  if(N.mode==='fix'&&!N.exp)return fail('請選擇有效日期');
   let path,body;
   if(N.mode==='fix'){path='/api/stock/expiry';body={productId:N.pid,lot:N.lot,unit:N.unit,from:N.from,expiry:N.exp,operator:N.operator}}
   else{
@@ -961,7 +988,8 @@ $('#modal').addEventListener('click',async e=>{
     if(!N.pid)return fail('請選擇品項');
     if(!N.lot.trim())return fail('請填批號');
     if(!q||q<1)return fail('入庫數量要大於 0');
-    path='/api/stock/in';body={productId:+N.pid,unit:N.unit,lot:N.lot.trim(),expiry:N.exp,qty:q,operator:N.operator}}
+    const pkb=packBody(+N.pid,N,N.unit==='箱');if(!pkb)return fail('請填「一箱有幾桶（瓶）」');
+    path='/api/stock/in';body={productId:+N.pid,unit:N.unit,lot:N.lot.trim(),expiry:N.exp,qty:q,operator:N.operator,...pkb}}
   N.busy=true;drawIn();
   try{store.set('tsb_op',N.operator);await api('POST',path,body);N=null;$('#modal').innerHTML='';toast(path==='/api/stock/in'?'已入庫':'有效日期已儲存');await refresh(true);render(true)}
   catch(er){if(N){N.busy=false;fail(er.message)}}
@@ -1048,7 +1076,8 @@ function extraSec(t){
   const u=t.unit?' '+t.unit:'',x=parseInt(F.extra,10)||0;
   return '<div class="sec extra-sec"><label class="lbl" for="fextra"><i class="sn">＋</i>多做的數量（轉成品庫存）</label>'+
     '<div class="row" style="flex-wrap:nowrap"><input id="fextra" class="mono" type="number" inputmode="numeric" min="0" placeholder="沒有多做就不用填" value="'+esc(F.extra)+'" style="font-size:22px;flex:1"><span class="hint" style="white-space:nowrap">'+esc(t.unit||'')+'</span></div>'+
-    '<label class="lbl" for="fexp" style="margin-top:10px">這批多做的有效日期（有多做就必填）</label><input id="fexp" type="date" value="'+esc(F.expiry||'')+'" style="font-size:20px">'+
+    (x>0?'<label class="lbl" for="fexp" style="margin-top:10px">有效日期（不用填：系統自動算 '+esc(autoExp().replace(/-/g,'/'))+'，共 '+shelfMonths()+' 個月）</label><input id="fexp" type="date" value="'+esc(F.expiry||'')+'" style="font-size:20px">':'')+
+    (x>0&&t.unit==='箱'?packInline(t.productId,F):'')+
     '<div class="hint extra-hint">'+(x>0?'訂單照常完成；另有 <b class="mono">'+num(x)+'</b>'+esc(u)+' 會記進成品庫存（用這次的批號與上面的有效日期），之後同品項的訂單可以直接用庫存出貨。':'實際做得比訂單多時填在這裡，多出來的會記進成品庫存，之後同品項的訂單可以直接用庫存出貨。')+'</div></div>';
 }
 function drawFinish(){
@@ -1204,21 +1233,21 @@ function drawBox(){
   h+='<div class="err">'+esc(F.err)+'</div><div class="row"><button id="fcancel" style="flex:1">取消</button><button id="fok" class="primary" style="flex:2;min-height:60px;font-size:18px"'+(F.busy?' disabled':'')+'>'+(F.busy?'儲存中…':'確認完成')+'</button></div></div></div>';
   const sc=$('#scrim')?$('.sheet').scrollTop:0;$('#modal').innerHTML=h;$('.sheet').scrollTop=sc;
 }
-$('#modal').addEventListener('input',e=>{if(F&&e.target.id==='fexp'){F.expiry=e.target.value;return}if(F&&e.target.id==='fextra'){F.extra=e.target.value;const hint=e.target.closest('.extra-sec').querySelector('.extra-hint');const x=parseInt(F.extra,10)||0,u=F.t.unit?' '+F.t.unit:'';if(hint)hint.innerHTML=x>0?'訂單照常完成；另有 <b class="mono">'+num(x)+'</b>'+esc(u)+' 會記進成品庫存（用這次的批號與上面的有效日期），之後同品項的訂單可以直接用庫存出貨。':'實際做得比訂單多時填在這裡，多出來的會記進成品庫存，之後同品項的訂單可以直接用庫存出貨。';return}
+$('#modal').addEventListener('input',e=>{if(F&&e.target.id==='fexp'){F.expiry=e.target.value;return}if(F&&e.target.id==='fextra'){const was=(parseInt(F.extra,10)||0)>0;F.extra=e.target.value;const now=(parseInt(F.extra,10)||0)>0;if(was!==now){const p=e.target.selectionStart;drawFinish();const n=$('#fextra');if(n){n.focus();try{n.setSelectionRange(p,p)}catch(_){}}return}const hint=e.target.closest('.extra-sec').querySelector('.extra-hint');const x=parseInt(F.extra,10)||0,u=F.t.unit?' '+F.t.unit:'';if(hint)hint.innerHTML=x>0?'訂單照常完成；另有 <b class="mono">'+num(x)+'</b>'+esc(u)+' 會記進成品庫存（用這次的批號與上面的有效日期），之後同品項的訂單可以直接用庫存出貨。':'實際做得比訂單多時填在這裡，多出來的會記進成品庫存，之後同品項的訂單可以直接用庫存出貨。';return}
   if(!F||!F.box)return;const pid=e.target.dataset.pid;if(!pid)return;
   if(e.target.classList.contains('c-lot'))F.cont[pid].lot=e.target.value.toUpperCase().replace(/\s/g,'');
   if(e.target.classList.contains('c-date'))F.cont[pid].date=e.target.value});
 async function boxConfirm(){
   const t=F.t,q=parseInt(F.qty,10),fail=m=>{F.err=m;drawBox()};
   if(!F.operator)return fail('請先點選操作人');
-  if((parseInt(F.extra,10)||0)>0&&!F.expiry)return fail('多做的數量要填有效日期');
+    const pkb=packBody(t.productId,F,(parseInt(F.extra,10)||0)>0&&t.unit==='箱');if(!pkb)return fail('請填「一箱有幾桶（瓶）」');
   for(const p of F.box){const c=F.cont[p.id];
     if(!/^[A-Z0-9]+-[A-Z]$/.test(c.lot||''))return fail('請選擇「'+shortName(p.name)+'」的批號（格式例如 HP103-A）');
     if(!c.date)return fail('請選擇「'+shortName(p.name)+'」的生產日期')}
   if(!q||q<1||q>t.qty)return fail('數量需介於 1 到 '+t.qty);
   F.busy=true;drawBox();
   try{
-    const r=await api('POST','/api/tasks/'+t.id+'/finish',{operator:F.operator,qty:q,extra:parseInt(F.extra,10)||0,extraExpiry:F.expiry,contents:F.box.map(p=>({productId:p.id,lot:F.cont[p.id].lot,date:F.cont[p.id].date}))});
+    const r=await api('POST','/api/tasks/'+t.id+'/finish',{operator:F.operator,qty:q,extra:parseInt(F.extra,10)||0,extraExpiry:F.expiry,...pkb,contents:F.box.map(p=>({productId:p.id,lot:F.cont[p.id].lot,date:F.cont[p.id].date}))});
     S.mine.add(t.id);F=null;$('#modal').innerHTML='';
     celebrate(t.customer,t.productName+' ×'+num(q)+(t.unit?' '+t.unit:'')+(r.rest>0?'（剩 '+num(r.rest)+' 留在看板）':'')+(r.extra?'　＋'+num(r.extra)+' 轉庫存':''),(r.lots||[]).map(shortName));
     await refresh(true);render(true);
@@ -1231,9 +1260,9 @@ async function finishConfirm(){
   const t=F.t,q=parseInt(F.qty,10);
   const fail=m=>{F.err=m;drawFinish()};
   if(!F.operator)return fail('請先點選操作人');
-  if((parseInt(F.extra,10)||0)>0&&!F.expiry)return fail('多做的數量要填有效日期');
+  const pkb=packBody(t.productId,F,(parseInt(F.extra,10)||0)>0&&t.unit==='箱');if(!pkb)return fail('請填「一箱有幾桶（瓶）」');
   if(F.noLot){if(!q||q<1||q>t.qty)return fail('數量需介於 1 到 '+t.qty);F.busy=true;drawFinish();
-    try{const r=await api('POST','/api/tasks/'+t.id+'/finish',{operator:F.operator,noLot:true,qty:q,extra:parseInt(F.extra,10)||0,extraExpiry:F.expiry});
+    try{const r=await api('POST','/api/tasks/'+t.id+'/finish',{operator:F.operator,noLot:true,qty:q,extra:parseInt(F.extra,10)||0,extraExpiry:F.expiry,...pkb});
       S.mine.add(t.id);F=null;$('#modal').innerHTML='';const p=S.products.find(x=>x.id===t.productId);if(p)p.no_lot=true;
       celebrate(t.customer,t.productName+(r.rest>0?'（剩 '+num(r.rest)+(t.unit?' '+t.unit:'')+' 留在看板）':'')+(r.extra?'　＋'+num(r.extra)+' 轉庫存':''),['無批號']);
       await refresh(true);render(true)}catch(e){if(F){F.busy=false;fail(e.message)}}
@@ -1245,7 +1274,7 @@ async function finishConfirm(){
   F.busy=true;drawFinish();
   try{
     F_unit=t.unit||'';
-    const r=await api('POST','/api/tasks/'+t.id+'/finish',{operator:F.operator,extra:parseInt(F.extra,10)||0,extraExpiry:F.expiry,lots:lots.map(l=>({cat:l.cat,variety:l.variety,matDate:l.matDate,matArr:l.matArr,seq:l.seq,lot:l.lot,qty:l.qty}))});
+    const r=await api('POST','/api/tasks/'+t.id+'/finish',{operator:F.operator,extra:parseInt(F.extra,10)||0,extraExpiry:F.expiry,...pkb,lots:lots.map(l=>({cat:l.cat,variety:l.variety,matDate:l.matDate,matArr:l.matArr,seq:l.seq,lot:l.lot,qty:l.qty}))});
     S.mine.add(t.id);F=null;$('#modal').innerHTML='';
     celebrate(t.customer,t.productName+(r.rest>0?'（剩 '+num(r.rest)+(F_unit?' '+F_unit:'')+' 留在看板）':'')+(r.extra?'　＋'+num(r.extra)+' 轉庫存':''),r.lots||[r.lot]);
     await refresh(true);render(true);
@@ -1352,11 +1381,13 @@ function checkDelivery(){
 }
 function srcRow(l){
   if(!l.p||!l.u)return '';const free=stockFreeC(l.p,l.u,S.editOrder?+S.editOrder:0);
+  if(l.u==='箱'&&!packOf(l.p)&&(S.stock||[]).some(x=>String(x.productId)===String(l.p))){l.s=false;const bu=(S.stock.find(x=>String(x.productId)===String(l.p))||{}).unit||'桶';return '<div class="src-row" style="flex:1 1 100%;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span class="hint">庫存是用「'+esc(bu)+'」記的，請先設定一箱有幾'+esc(bu)+'，才能用庫存出貨</span><button type="button" class="chip" data-setpack="'+esc(l.p)+'" style="min-height:44px;padding:4px 14px">設定一箱幾'+esc(bu)+'</button></div>'}
   if(free<=0){if(l.s)l.s=false;return ''}
+  {const sk=l.p+'|'+l.u;if(l.sKey!==sk){l.sKey=sk;if(!S.editOrder&&l.sTouched!==true)l.s=true}}
   return '<div class="src-row" style="flex:1 1 100%;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span class="hint">貨源</span>'+
     '<button type="button" class="chip" data-ls="0" aria-pressed="'+(!l.s)+'" style="min-height:44px;padding:4px 14px">現做</button>'+
     '<button type="button" class="chip" data-ls="1" aria-pressed="'+(!!l.s)+'" style="min-height:44px;padding:4px 14px">用庫存</button>'+
-    '<span class="hint">庫存可用 <b class="mono">'+num(free)+'</b>'+esc(l.u)+(l.s&&+l.q>free?'　<b style="color:var(--red)">數量超過庫存</b>':'')+'</span></div>';
+    '<span class="hint">庫存可用 <b class="mono">'+num(free)+'</b>'+esc(l.u)+(l.s&&+l.q>free?'　<b style="color:var(--green,#3a7)">庫存 '+num(free)+' 先用庫存，其餘 '+num(+l.q-free)+' 自動排現做</b>':'')+(l.s&&+l.q<=free&&+l.q>0?'　<b style="color:var(--green,#3a7)">這張不用生產，直接用庫存出貨</b>':'')+'</span></div>';
 }
 function lineIdx(el){const l=el.closest('.oline');return l?+l.dataset.i:-1}
 $('#v-orders').addEventListener('input',e=>{
@@ -1388,10 +1419,10 @@ $('#v-orders').addEventListener('submit',async e=>{
   if(!lines.length)return err('請至少選一個品項');
   for(let i=0;i<lines.length;i++){const l=lines[i],n='第 '+(OF.lines.indexOf(l)+1)+' 行：';
     if(!l.p)return err(n+'請選擇品項');if(!(+l.q>0))return err(n+'數量需大於 0');if(!l.u)return err(n+'請選擇單位（桶、箱、瓶）');
-    if(l.s&&+l.q>stockFreeC(l.p,l.u,S.editOrder?+S.editOrder:0))return err(n+'用庫存的數量超過可用庫存')}
+    if(S.editOrder&&l.s&&+l.q>stockFreeC(l.p,l.u,+S.editOrder))return err(n+'用庫存的數量超過可用庫存')}
   if(id)S.mineO.add(+id);
   const r=await act(()=>id?api('PUT','/api/tasks/'+id,{customer,productId:lines[0].p,qty:lines[0].q,unit:lines[0].u,useStock:!!lines[0].s,shipDate,note,shipMethod,address:(OF.addr||'').trim()})
-    :api('POST','/api/tasks/batch',{customer,shipDate,note,shipMethod,createdBy:OF.by,address:(OF.addr||'').trim(),urgent:!!OF.urgent,items:lines.map(l=>({productId:l.p,qty:l.q,unit:l.u,useStock:!!l.s}))}).then(r=>{(r.ids||[]).forEach(i=>S.mineO.add(+i));return r}),
+    :api('POST','/api/tasks/batch',{customer,shipDate,note,shipMethod,createdBy:OF.by,address:(OF.addr||'').trim(),urgent:!!OF.urgent,items:lines.flatMap(l=>{const q=+l.q;if(!l.s)return [{productId:l.p,qty:q,unit:l.u,useStock:false}];const fr=stockFreeC(l.p,l.u,0);if(q<=fr)return [{productId:l.p,qty:q,unit:l.u,useStock:true}];return (fr>0?[{productId:l.p,qty:fr,unit:l.u,useStock:true}]:[]).concat([{productId:l.p,qty:q-fr,unit:l.u,useStock:false}])})}).then(r=>{(r.ids||[]).forEach(i=>S.mineO.add(+i));return r}),
     id?'訂單已更新':(OF.urgent?'緊急單已送出，生產端正在響警報':'已加入排程（'+lines.length+' 個品項）'));
   if(r&&r.ids)r.ids.forEach(i=>S.ack.add(i+':*'));saveAck();
   if(r){S.editOrder=null;OF.editing=null;resetOrderForm();document.activeElement&&document.activeElement.blur();renderOrders()}
@@ -1401,7 +1432,8 @@ $('#v-orders').addEventListener('click',async e=>{
   if(b.dataset.oby!==undefined){OF.by=b.dataset.oby;store.set('tsb_op',OF.by);document.querySelectorAll('[data-oby]').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.oby===OF.by)));return}
   if(b.dataset.tw){S.trackWho=b.dataset.tw;renderOrders();return}
   if(b.dataset.lu){const i=lineIdx(b);if(i>=0){OF.lines[i].u=b.dataset.lu;OF.lines[i].s=false;renderLines()}return}
-  if(b.dataset.ls!==undefined){const i=lineIdx(b);if(i>=0){OF.lines[i].s=b.dataset.ls==='1';renderLines()}return}
+  if(b.dataset.ls!==undefined){const i=lineIdx(b);if(i>=0){OF.lines[i].s=b.dataset.ls==='1';OF.lines[i].sTouched=true;renderLines()}return}
+  if(b.dataset.setpack!==undefined){openPack(b.dataset.setpack);return}
   if(b.dataset.ldel!==undefined){OF.lines.splice(+b.dataset.ldel,1);if(!OF.lines.length)OF.lines.push({p:'',q:'',u:''});renderLines();return}
   if(b.id==='o-addline'){OF.lines.push({p:'',q:'',u:''});renderLines(OF.lines.length-1);return}
   if(b.dataset.pick){const pid=b.dataset.pick,ex=OF.lines.findIndex(l=>l.p===pid);
@@ -1429,7 +1461,7 @@ function renderRecords(){
   if(!S.done.length)h+='<div class="empty"><b>還沒有生產紀錄</b>在看板上按「完成生產」後，紀錄會出現在這裡，可以用批號回查。</div>';
   else h+='<p class="hint">共 '+rows.length+' 筆</p><div class="tbl-wrap"><table><thead><tr><th>完成時間</th><th>批號</th><th>品項</th><th>數量</th><th>客戶</th><th>出貨日</th><th>出貨方式</th><th>操作人</th><th></th></tr></thead><tbody>'+rows.map(t=>
    '<tr><td class="mono">'+fmtTime(t.completedAt)+'</td><td class="lotcell">'+(t.contents?t.contents.map(c=>'<div><span class="stamp sm">'+esc(c.lot)+'</span> <span class="hint" style="font-family:var(--f-body);font-weight:400">'+esc(shortName(c.name))+'　'+esc(c.date.slice(5).replace('-','/'))+'</span></div>').join(''):(t.shipLots&&t.shipLots.length?t.shipLots.map(x=>'<div><span class="stamp sm">'+esc(x.lot)+'</span> <span class="hint" style="font-family:var(--f-body);font-weight:400">×'+num(x.qty)+'　'+(x.expiry?'效期 '+esc(x.expiry.replace(/-/g,'/')):'效期未填')+'</span></div>').join(''):'<span class="stamp">'+esc(t.lot)+'</span>'))+(t.lotHistory&&t.lotHistory.length?'<div class="hint">曾修改 '+t.lotHistory.length+' 次</div>':'')+'</td><td>'+esc(t.productName)+'</td><td class="mono">'+qtyU(t)+(t.orderedQty&&t.orderedQty!==t.qty?'<div class="hint">訂單 '+num(t.orderedQty)+'</div>':'')+'</td><td>'+esc(t.customer)+'</td><td class="mono">'+esc(t.shipDate)+'</td><td>'+(t.shipMethod?methodPill(t):'<span class="hint">—</span>')+'</td><td>'+esc(t.operator)+'</td>'+
-   '<td>'+(t.contents?'<span class="pill p-box">禮盒</span>':'<button data-rlot="'+t.id+'">改批號</button>')+(t.deliveryStatus==='delivered'||t.deliveryStatus==='failed'?'':' <button data-rmeth="'+t.id+'">改出貨方式</button>')+'</td></tr>').join('')+'</tbody></table></div>';
+   '<td>'+(t.contents?'<span class="pill p-box">禮盒</span>':'<button data-rlot="'+t.id+'">改批號</button>')+(t.deliveryStatus==='delivered'||t.deliveryStatus==='failed'?'':' <button data-rmeth="'+t.id+'">改出貨方式</button>')+(canToStock(t)?' <button data-rtostock="'+t.id+'" title="客戶取消或不要了，貨轉成成品庫存">轉成庫存</button>':'')+'</td></tr>').join('')+'</tbody></table></div>';
   v.innerHTML=h;
 }
 $('#v-records').addEventListener('click',async e=>{if(!e.target.closest('#rexp'))return;
@@ -1437,6 +1469,51 @@ $('#v-records').addEventListener('click',async e=>{if(!e.target.closest('#rexp')
     const u=URL.createObjectURL(await r.blob()),a=document.createElement('a');a.href=u;a.download='生產紀錄.csv';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000)}catch(_){toast('匯出失敗，請再試一次')}});
 $('#v-records').addEventListener('input',e=>{if(e.target.id==='rq'){S.q=e.target.value;const pos=e.target.selectionStart;renderRecords();const n=$('#rq');n.focus();n.setSelectionRange(pos,pos)}});
 let MM=null;
+/* a finished order that is not going out: move the goods into stock (original lot kept) */
+const canToStock=t=>t.status==='done'&&!t.fromStock&&!t.contents&&!['delivered','failed','legacy'].includes(t.deliveryStatus)&&!(t.note||'').includes('已轉庫存');
+let TS=null;
+function openToStock(t){const op=store.get('tsb_op');TS={t,exp:'',operator:(cfg().people||[]).includes(op)?op:'',err:'',busy:false};drawTS()}
+function drawTS(){
+  if(!TS)return;const t=TS.t,people=cfg().people||[];
+  $('#modal').innerHTML='<div class="scrim" id="tscrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="轉成庫存">'+
+    '<div class="sheet-h"><div class="cust"><span class="cust-tag">轉成庫存</span>'+esc(t.customer)+'</div><div class="pname">'+esc(shortName(t.productName))+' <span class="mono">× '+qtyU(t)+'</span>　批號 <span class="mono">'+esc(t.lot||'')+'</span></div></div>'+
+    '<div class="sec"><div class="lbl"><i class="sn">1</i>操作人</div><div class="chips">'+people.map(n=>'<button type="button" class="chip" data-tsop="'+esc(n)+'" aria-pressed="'+(TS.operator===n)+'">'+esc(n)+'</button>').join('')+'</div></div>'+
+    '<div class="sec"><label class="lbl" for="ts-exp"><i class="sn">2</i>有效日期（不填：自動 '+esc(addMonthsISO(t.completedAt?tpDay(t.completedAt):today(),shelfMonths()).replace(/-/g,'/'))+'）</label><input id="ts-exp" type="date" style="font-size:22px" value="'+esc(TS.exp)+'"></div>'+
+    (t.unit==='箱'?packInline(t.productId,TS):'')+
+    '<div class="hint">整筆 <b class="mono">'+qtyU(t)+'</b> 會用原本的批號放進成品庫存，並從配送／出貨名單移除（生產紀錄會保留）。之後同品項的訂單就可以直接用庫存出貨。</div>'+
+    '<div class="err">'+esc(TS.err)+'</div><div class="row"><button type="button" id="tscancel" style="flex:1">取消</button><button type="button" id="tsok" class="primary" style="flex:2;min-height:60px;font-size:18px"'+(TS.busy?' disabled':'')+'>'+(TS.busy?'儲存中…':'確認轉成庫存')+'</button></div></div></div>'}
+$('#modal').addEventListener('input',e=>{if(TS&&e.target.id==='ts-exp')TS.exp=e.target.value});
+$('#modal').addEventListener('click',async e=>{
+  if(!TS)return;
+  if(e.target.id==='tscrim'||e.target.id==='tscancel'){TS=null;$('#modal').innerHTML='';return}
+  const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.tsop!==undefined){TS.operator=b.dataset.tsop;TS.err='';return drawTS()}
+  if(b.id!=='tsok')return;
+  const t=TS.t,fail=m=>{TS.err=m;drawTS()};
+  if(!TS.operator)return fail('請先點選操作人');
+  const pkb=packBody(t.productId,TS,t.unit==='箱');if(!pkb)return fail('請填「一箱有幾桶（瓶）」');
+  TS.busy=true;drawTS();
+  try{store.set('tsb_op',TS.operator);await api('POST','/api/tasks/'+t.id+'/to-stock',{operator:TS.operator,expiry:TS.exp,...pkb});TS=null;$('#modal').innerHTML='';toast('已轉成庫存');await refresh(true);render(true)}
+  catch(er){if(TS){TS.busy=false;fail(er.message)}}
+});
+/* set one product's pack size (一箱幾桶) from the order screen */
+let PK=null;
+function openPack(pid){PK={pid,pk:{size:'',base:guessBase(pid)},err:''};drawPK()}
+function drawPK(){
+  if(!PK)return;const p=prodOf(PK.pid);
+  $('#modal').innerHTML='<div class="scrim" id="pkscrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="一箱幾桶"><div class="sheet-h"><div class="cust"><span class="cust-tag">一箱入數</span>'+esc(shortName(p.name||''))+'</div></div>'+
+    '<div class="sec"><div class="lbl">一箱有幾桶／瓶？</div><div class="row" style="flex-wrap:nowrap;align-items:center"><span class="hint">一箱＝</span><input class="mono" id="pkm-size" type="number" inputmode="numeric" min="2" value="'+esc(PK.pk.size)+'" style="width:90px;font-size:22px"><span class="chips">'+['桶','瓶'].map(u=>'<button type="button" class="chip" data-pkmb="'+u+'" aria-pressed="'+(PK.pk.base===u)+'">'+u+'</button>').join('')+'</span></div></div>'+
+    '<div class="err">'+esc(PK.err)+'</div><div class="row"><button type="button" id="pkcancel" style="flex:1">取消</button><button type="button" id="pkok" class="primary" style="flex:2;min-height:60px;font-size:18px">儲存</button></div></div></div>'}
+$('#modal').addEventListener('input',e=>{if(PK&&e.target.id==='pkm-size')PK.pk.size=e.target.value});
+$('#modal').addEventListener('click',async e=>{
+  if(!PK)return;
+  if(e.target.id==='pkscrim'||e.target.id==='pkcancel'){PK=null;$('#modal').innerHTML='';return}
+  const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.pkmb!==undefined){PK.pk.base=b.dataset.pkmb;return drawPK()}
+  if(b.id!=='pkok')return;
+  const n=parseInt(PK.pk.size,10);if(!(n>=2)){PK.err='請填 2 以上的數字';return drawPK()}
+  try{await api('POST','/api/products/'+PK.pid+'/pack',{pack:{size:n,base:PK.pk.base}});PK=null;$('#modal').innerHTML='';toast('已記住');await refresh(true);render(true)}catch(er){PK.err=er.message;drawPK()}
+});
 function drawMeth(){
   if(!MM)return;const t=MM.t,sibs=S.done.filter(x=>x.id!==t.id&&x.customer===t.customer&&x.shipDate===t.shipDate&&(x.deliveryStatus===''||x.deliveryStatus==='legacy')).length;
   $('#modal').innerHTML='<div class="scrim" id="mscrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="改出貨方式">'+
@@ -1459,7 +1536,7 @@ $('#modal').addEventListener('click',async e=>{
   try{const r=await api('POST','/api/tasks/'+MM.t.id+'/method',{method:MM.m,address:MM.addr.trim(),siblings:MM.sib});MM=null;$('#modal').innerHTML='';toast('已改，共 '+r.changed+' 筆');await refresh(true);render(true)}
   catch(er){if(MM){MM.busy=false;MM.err=er.message;drawMeth()}}
 });
-$('#v-records').addEventListener('click',e=>{const mb=e.target.closest('button[data-rmeth]');if(mb){const t=S.done.find(x=>x.id===+mb.dataset.rmeth);if(t){const c=S.customers.find(x=>x.name===t.customer);MM={t,m:t.shipMethod||'公司配送',addr:(c&&c.address)||'',sib:true,err:'',busy:false};drawMeth()}return}const b=e.target.closest('button[data-rlot]');if(!b)return;const t=S.done.find(x=>x.id===+b.dataset.rlot);if(t)openLotEdit(t)});
+$('#v-records').addEventListener('click',e=>{const sb=e.target.closest('button[data-rtostock]');if(sb){const t=S.done.find(x=>x.id===+sb.dataset.rtostock);if(t)openToStock(t);return}const mb=e.target.closest('button[data-rmeth]');if(mb){const t=S.done.find(x=>x.id===+mb.dataset.rmeth);if(t){const c=S.customers.find(x=>x.name===t.customer);MM={t,m:t.shipMethod||'公司配送',addr:(c&&c.address)||'',sib:true,err:'',busy:false};drawMeth()}return}const b=e.target.closest('button[data-rlot]');if(!b)return;const t=S.done.find(x=>x.id===+b.dataset.rlot);if(t)openLotEdit(t)});
 function openLotEdit(t){
   $('#modal').innerHTML='<div class="scrim" id="lscrim"><form class="sheet" id="lform" role="dialog" aria-modal="true" aria-label="修改批號"><div class="pname">修改批號</div><div class="hint">'+esc(t.productName)+' × '+qtyU(t)+'　'+esc(t.customer)+'</div>'+
   '<label class="f" for="lnew">新批號<input id="lnew" class="mono" autocomplete="off" style="font-size:24px;text-transform:uppercase" value="'+esc(t.lot)+'"></label>'+
@@ -1479,6 +1556,7 @@ function renderSettings(){
   const th=store.get('tsb_theme')==='ivory'?'ivory':'forest';
   let h='<header class="pg-head"><h1>設定</h1><p>人員、品項主檔、批號規則都在這裡，改了所有裝置立刻同步</p></header><h2>外觀主題</h2><div class="panel"><div class="themes"><button type="button" class="theme-opt" data-theme-set="forest" aria-pressed="'+(th==='forest')+'"><i style="background:linear-gradient(135deg,#08100C 55%,#F2B21A)"></i><b>森林綠（夜間）</b><small>深色底、蜂蜜金，適合現場與電視</small></button><button type="button" class="theme-opt" data-theme-set="ivory" aria-pressed="'+(th==='ivory')+'"><i style="background:linear-gradient(135deg,#E6DDC8 55%,#15213B)"></i><b>象牙金（明亮）</b><small>象牙白底、海軍藍字，適合辦公室</small></button></div></div><h2>人員名單</h2><div class="panel"><div class="chips" style="margin-bottom:12px">'+((c.people||[]).map((n,i)=>'<button class="chip" data-delp="'+i+'" title="移除">'+esc(n)+'　×</button>').join('')||'<span class="hint">還沒有人員，新增後在看板完成生產時可以點選。</span>')+'</div>'+
    '<div class="row"><input id="s-person" placeholder="輸入姓名" style="flex:1;min-width:160px"><button id="s-addp" class="primary">新增人員</button></div></div>';
+  h+='<h2>成品庫存</h2><div class="panel"><label class="f" for="s-shelf">成品預設保存期限（月）<input id="s-shelf" class="mono" type="number" min="1" max="120" value="'+shelfMonths()+'" style="max-width:140px"></label><p class="hint">多做的成品轉庫存時，沒填有效日期就用「生產日＋這個月數」自動帶入。</p><button id="s-shelfsave" class="primary">儲存</button></div>';
   h+=driverCard();
   h+='<h2>匯入新高手銷貨紀錄</h2><div class="panel"><p class="hint" style="margin-top:0">從新高手匯出的 CSV 或 Excel 另存的 CSV。欄位順序：客戶名稱、品號、品名（或：客戶編號、客戶名稱、品號、品名）。重複匯入不會產生重複資料。</p>'+
    '<div class="row"><input id="s-imp" type="file" accept=".csv,text/csv" style="flex:1;min-width:200px"><button id="s-impgo" class="primary">匯入</button></div><div class="err" id="imperr"></div><div id="impres" class="hint"></div></div>';
@@ -1550,6 +1628,7 @@ $('#v-settings').addEventListener('click',async e=>{
   if(b.dataset.themeSet){const t=b.dataset.themeSet;store.set('tsb_theme',t);if(t==='ivory')document.documentElement.setAttribute('data-theme','ivory');else document.documentElement.removeAttribute('data-theme');const m=document.querySelector('meta[name=theme-color]');if(m)m.content=t==='ivory'?'#E6DDC8':'#0A110E';return renderSettings()}
   const c=JSON.parse(JSON.stringify(cfg()));c.people=c.people||[];c.varieties=c.varieties||{};
   const saveCfg=msg=>act(()=>api('PUT','/api/config',c),msg);
+  if(b.id==='s-shelfsave'){const v=parseInt($('#s-shelf').value,10);if(!(v>=1&&v<=120))return toast('請填 1 到 120 個月');c.shelfMonths=v;await saveCfg('已儲存：預設保存期限 '+v+' 個月');return}
   if(b.id==='s-impgo'){b.focus();return runImport()}
   if(b.dataset.pbox){return openBoxEditor(+b.dataset.pbox)}
   if(b.id==='s-pmiss'){S.pOnlyMissing=!S.pOnlyMissing;return renderSettings()}
