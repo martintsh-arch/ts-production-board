@@ -190,7 +190,7 @@ async function act(path,body,label){
   if(path==='/done')chime('ok');else if(path==='/fail')chime('bad');
   const b={...body,driver:DRV,at:new Date().toISOString()};
   mark(b.taskIds,path,b.at,DRV,b.issue);
-  lastUndo={label:label,ids:b.taskIds,t:Date.now()};setTimeout(()=>{if(lastUndo&&lastUndo.ids===b.taskIds){lastUndo=null;render()}},15*60000);
+  lastUndo={label:label,ids:b.taskIds,t:Date.now()};setTimeout(()=>{if(lastUndo&&lastUndo.ids===b.taskIds){lastUndo=null;render()}},10000);
   render();
   try{await api('POST',path,b)}
   catch(e){
