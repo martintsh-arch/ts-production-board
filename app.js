@@ -595,8 +595,8 @@ function celebrate(title,sub,lots){
 function notifyBanner(lines,speech,snd){
   let wrap=$('#notes');if(!wrap){wrap=document.createElement('div');wrap.id='notes';document.body.appendChild(wrap)}
   lines.forEach(l=>{const n=document.createElement('div');n.className='note';n.setAttribute('role','status');
-    n.innerHTML='<span class="note-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg></span><div style="min-width:0"><b>已完成生產</b><div class="note-t">'+esc(l)+'</div></div><button type="button" aria-label="關閉通知">×</button>';
-    n.querySelector('button').onclick=()=>n.remove();wrap.prepend(n);setTimeout(()=>{n.classList.add('out');setTimeout(()=>n.remove(),400)},12000)});
+    n.innerHTML='<span class="note-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg></span><div style="min-width:0"><b>'+(/^🚚/.test(l)?'配送完成':/^⚠/.test(l)?'配送異常':'已完成生產')+'</b><div class="note-t">'+esc(l.replace(/^(🚚 配送完成|⚠ 配送異常)｜/,''))+'</div></div><button type="button" aria-label="關閉通知">×</button>';
+    n.querySelector('button').onclick=()=>n.remove();wrap.prepend(n);setTimeout(()=>{n.classList.add('out');setTimeout(()=>n.remove(),400)},10000)});
   Snd.play(snd||'notify');
   if(speech&&speech.length)setTimeout(()=>speech.forEach(t=>Voice.say(t)),650);
 }
