@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#1B3D31">
+<title>統香 司機</title>
+<style>
+:root{--bg:#EAE2D3;--panel:#F6F2EA;--panel2:#F3EEE4;--line:#C9BDA9;--line2:#DDD3C2;--ink:#1F1A14;--ink2:#3B342B;--mute:#5C5246;--green:#1B3D31;--on:#F3EDE2;--sand:#D9C9A6;--honey:#F0B44C;--amber:#8A520C;--amber-bg:#F2D9B0;--red:#A3361F;--red-bg:#F5D3C8}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink)}
+body{font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif;font-variant-numeric:tabular-nums;font-size:17px;line-height:1.5;padding-bottom:calc(30px + env(safe-area-inset-bottom))}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+button:focus-visible,a:focus-visible,input:focus{outline:3px solid var(--honey);outline-offset:1px}
+.hd{position:sticky;top:0;z-index:5;background:var(--green);color:var(--on);padding:calc(14px + env(safe-area-inset-top)) 18px 14px;display:flex;flex-direction:column;gap:10px}
+.hd .r{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.hd b{font-size:22px;font-weight:900}
+.hd .s{color:var(--sand);font-size:15px}
+.hd button{background:none;border:1px solid #5E7D6F;color:var(--on);border-radius:6px;min-height:36px;padding:2px 10px;font-size:14px}
+.bar{height:8px;border-radius:4px;background:#355E4E;overflow:hidden}.bar i{display:block;height:100%;background:var(--honey)}
+.wrap{padding:14px 14px 0;display:flex;flex-direction:column;gap:14px;max-width:640px;margin:0 auto}
+.lbl{font-size:14px;letter-spacing:.1em;color:var(--mute);font-weight:700}
+.next{display:flex;flex-direction:column;gap:12px;background:var(--panel);border:2px solid var(--green);border-radius:12px;padding:18px}
+.next .k{font-size:14px;font-weight:800;color:var(--green);letter-spacing:.08em}
+.next h2{margin:0;font-size:30px;font-weight:900;line-height:1.2}
+.addr{font-size:16px;color:var(--ink2)}
+.items{display:flex;flex-direction:column;border-top:1px solid var(--line2)}
+.items div{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--line2);font-size:17px}
+.items b{font-weight:800;white-space:nowrap}
+.btns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.7fr);gap:10px}
+.b{min-height:60px;border-radius:10px;border:2px solid var(--green);background:transparent;color:var(--green);font-size:18px;font-weight:800;display:flex;align-items:center;justify-content:center;text-decoration:none;padding:6px 10px;text-align:center}
+.b.pri{background:var(--green);color:var(--on);border-color:var(--green)}
+.b.dis{opacity:.45;pointer-events:none}
+.lnk{background:none;border:none;color:var(--amber);font-weight:800;min-height:44px;font-size:16px;padding:4px}
+.card{display:flex;flex-direction:column;gap:6px;background:var(--panel2);border-radius:10px;padding:12px 14px}
+.pick{display:flex;gap:12px;align-items:flex-start;width:100%;text-align:left;background:var(--panel2);border:2px solid transparent;border-radius:10px;padding:12px 14px}
+.pick[aria-checked="true"]{border-color:var(--green);background:#E5EDE7}
+.box{flex:0 0 auto;width:30px;height:30px;border-radius:6px;border:2px solid var(--mute);display:flex;align-items:center;justify-content:center;margin-top:2px}
+.pick[aria-checked="true"] .box{background:var(--green);border-color:var(--green)}
+.tag{display:inline-block;font-size:13px;font-weight:800;padding:2px 8px;border-radius:4px}
+.t-late{background:var(--red-bg);color:var(--red)}.t-amb{background:var(--amber-bg);color:#6B3E06}.t-ok{background:#CFE0D3;color:var(--green)}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.muted{color:var(--mute);font-size:15px}
+.stop{display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--panel2);border-radius:8px}
+.num{flex:0 0 auto;width:32px;height:32px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;background:var(--line2);color:var(--ink2)}
+.num.on{background:var(--honey);color:#1A140C}.num.ok{background:var(--green);color:var(--on)}.num.bad{background:var(--red);color:#fff}
+.toast{position:fixed;left:12px;right:12px;bottom:calc(16px + env(safe-area-inset-bottom));z-index:30;background:var(--ink);color:var(--on);border-radius:10px;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:16px;max-width:620px;margin:0 auto}
+.toast button{background:var(--honey);color:#1A140C;border:none;border-radius:8px;min-height:44px;padding:4px 14px;font-weight:800}
+.sheet{position:fixed;inset:0;z-index:40;background:rgba(20,16,12,.55);display:flex;align-items:flex-end;justify-content:center}
+.sheet .in{background:var(--panel);width:100%;max-width:640px;border-radius:14px 14px 0 0;padding:20px 18px calc(20px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:10px}
+.sheet .in button.opt{min-height:56px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);font-size:18px;font-weight:700;text-align:left;padding:8px 14px}
+.inp{min-height:52px;border:1px solid var(--line);border-radius:8px;background:#fff;padding:8px 12px;font-size:20px;width:100%}
+.center{padding:40px 20px;text-align:center;display:flex;flex-direction:column;gap:14px;align-items:center;max-width:460px;margin:0 auto}
+.who{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%}
+.who button{min-height:70px;border-radius:12px;border:2px solid var(--green);background:var(--panel);font-size:22px;font-weight:900;color:var(--green)}
+</style>
+</head>
+<body>
+<div id="app"><div class="center">載入中…</div></div>
+<input type="file" id="cam" accept="image/*" capture="environment" hidden>
+<div id="toast"></div>
+<div id="sheet"></div>
+<script>
+(function(){
+'use strict';
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const store={get(k){try{return localStorage.getItem(k)||''}catch(e){return''}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}},del(k){try{localStorage.removeItem(k)}catch(e){}}};
+const S={pin:store.get('tsb_dpin'),me:store.get('tsb_driver'),d:null,pick:{},busy:false,wake:0,cur:null};
+const hm=ts=>{if(!ts)return '';const x=new Date(ts);return String(x.getHours()).padStart(2,'0')+':'+String(x.getMinutes()).padStart(2,'0')};
+const md=iso=>{const x=new Date(iso+'T00:00:00Z');return (x.getUTCMonth()+1)+'/'+x.getUTCDate()};
+function toast(m,undo,ms){const t=$('#toast');clearTimeout(toast.t);t.className='toast';t.innerHTML='<span>'+esc(m)+'</span>'+(undo?'<button type="button" id="undo">復原</button>':'');t.hidden=false;
+  if(undo)$('#undo').onclick=()=>{t.hidden=true;undo()};toast.t=setTimeout(()=>{t.hidden=true},ms||10000)}
+$('#toast').hidden=true;
+async function api(m,u,b){
+  let r;try{r=await fetch(u,{method:m,headers:{'Content-Type':'application/json','X-Driver-PIN':S.pin},body:b?JSON.stringify(b):undefined})}catch(e){throw new Error('網路不通，請稍後再試')}
+  if(r.status===401){S.pin='';store.del('tsb_dpin');draw();throw new Error('司機密碼不對')}
+  if(r.status===502||r.status===503||r.status===504)throw Object.assign(new Error('系統啟動中'),{wake:true});
+  const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error==='nopin'?'辦公室還沒設定司機密碼':(j.error||'連線失敗'));return j}
+async function load(){
+  if(!S.pin)return draw();
+  try{S.d=await api('GET','/driver-api/today');S.wake=0;draw()}
+  catch(e){if(e.wake&&!S.d&&S.wake<24){S.wake++;$('#app').innerHTML='<div class="center"><b>系統啟動中（約 30 秒）</b><span class="muted">會自動重試，不用一直按…</span></div>';setTimeout(load,5000);return}if(S.d)toast(e.message);else $('#app').innerHTML='<div class="center"><b>'+esc(e.message)+'</b><button class="b pri" type="button" onclick="location.reload()">重新整理</button></div>'}
+}
+setInterval(()=>{if(!document.hidden&&S.pin&&S.me&&!S.busy&&!$('#sheet').innerHTML)load()},20000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)load()});
+
+function mineOf(s){return s.items.filter(i=>!i.status&&i.claimedBy===S.me)}
+function draw(){
+  const a=$('#app');
+  if(!S.pin){a.innerHTML='<form class="center" id="pf"><b style="font-size:24px">統香 司機</b><span class="muted">請輸入司機密碼（問辦公室），輸入一次會記住。</span><input class="inp" id="pin" type="password" inputmode="numeric" autocomplete="current-password" aria-label="司機密碼"><button class="b pri" style="width:100%" type="submit">進入</button></form>';
+    $('#pf').onsubmit=e=>{e.preventDefault();S.pin=$('#pin').value.trim();store.set('tsb_dpin',S.pin);load()};return}
+  const d=S.d;if(!d)return;
+  if(!S.me||!d.drivers.includes(S.me)){a.innerHTML='<div class="center"><b style="font-size:24px">你是哪一位？</b><div class="who">'+d.drivers.map(n=>'<button type="button" data-me="'+esc(n)+'">'+esc(n)+'</button>').join('')+'</div></div>';return}
+  const pend=d.stops.filter(s=>s.status==='pending');
+  const mine=pend.filter(s=>mineOf(s).length).sort((x,y)=>x.seq-y.seq);
+  const take=pend.filter(s=>s.items.some(i=>i.ready&&!i.status&&!i.claimedBy));
+  const wait=pend.filter(s=>s.items.some(i=>!i.ready));
+  const other=pend.filter(s=>!mineOf(s).length&&s.items.some(i=>!i.status&&i.claimedBy&&i.claimedBy!==S.me));
+  const done=d.stops.filter(s=>s.status!=='pending'&&(s.by===S.me||!s.by)).sort((x,y)=>String(x.doneAt).localeCompare(String(y.doneAt)));
+  const myDone=d.stops.filter(s=>s.status!=='pending'&&s.by===S.me).length,tot=myDone+mine.length;
+  const nx=mine[0];S.cur=nx||null;
+  let h='<header class="hd"><div class="r"><b>'+esc(S.me)+' · '+md(d.date)+'</b><span class="s">'+myDone+' / '+tot+' 站 <button type="button" data-sw="1">換人</button></span></div><div class="bar"><i style="width:'+(tot?Math.round(myDone/tot*100):0)+'%"></i></div></header><div class="wrap">';
+  if(nx){
+    const late=nx.items.some(i=>i.shipDate<d.date),nav=nx.lat!=null?'https://www.google.com/maps/dir/?api=1&destination='+nx.lat+','+nx.lng:nx.address?'https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(nx.address):'';
+    h+='<section class="next" aria-label="下一站"><div class="row"><span class="k">下一站 · 第 '+(myDone+1)+' 站'+(nx.eta?' · 預計 '+esc(nx.eta):'')+'</span>'+(late?'<span class="tag t-late">已逾期（出貨日 '+md(nx.items.map(i=>i.shipDate).sort()[0])+'）</span>':'')+'</div><h2>'+esc(nx.customer)+'</h2>'+
+      '<div class="addr">'+(nx.address?esc(nx.address):nx.lat!=null?'沒有地址（已記錄上次送貨位置，可導航）':'沒有地址 · 送達時會自動記下位置')+(nx.win?' · 收貨 '+esc(nx.win.open)+'–'+esc(nx.win.close):'')+'</div>'+
+      '<div class="items">'+mineOf(nx).map(i=>'<div><span>'+esc(i.name)+(i.note?'<br><span class="muted">'+esc(i.note)+'</span>':'')+'</span><b>'+i.qty+' '+esc(i.unit)+'</b></div>').join('')+'</div>'+
+      '<div class="btns"><a class="b'+(nav?'':' dis')+'" href="'+(nav||'#')+'" target="_blank" rel="noopener">導航</a><button type="button" class="b pri" data-deliver="photo"'+(S.busy?' disabled':'')+'>送達・拍照簽收</button></div>'+
+      '<div class="row"><button type="button" class="lnk" data-deliver="nophoto">不拍照，直接送達</button><button type="button" class="lnk" data-fail="1">沒人收／有問題</button></div></section>';
+  }else if(mine.length===0&&take.length===0&&wait.length===0)h+='<section class="next" style="align-items:center;text-align:center"><h2 style="color:var(--green)">今天全部送完了</h2><span class="muted">每一站的時間、位置和照片都已存好，辦公室也看得到。</span></section>';
+  if(mine.length>1)h+='<div class="lbl">我車上接下來</div>'+mine.slice(1).map((s,i)=>'<div class="stop"><span class="num">'+(myDone+i+2)+'</span><span style="flex:1"><b>'+esc(s.customer)+'</b><br><span class="muted">'+mineOf(s).map(x=>esc(x.name)+' '+x.qty+esc(x.unit)).join('、')+'</span></span><button type="button" class="lnk" data-rel="'+mineOf(s).map(x=>x.id).join(',')+'">放回</button></div>').join('');
+  if(take.length){const sel=take.filter(s=>S.pick[s.customer]);
+    h+='<div class="lbl">已備好、可以帶走的貨（勾選要裝車的）</div>'+take.map(s=>{const its=s.items.filter(i=>i.ready&&!i.status&&!i.claimedBy),on=!!S.pick[s.customer],late=its.some(i=>i.shipDate<d.date);
+      return '<button type="button" class="pick" role="checkbox" aria-checked="'+on+'" data-pick="'+esc(s.customer)+'"><span class="box">'+(on?'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#F3EDE2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>':'')+'</span><span style="flex:1"><b>'+esc(s.customer)+'</b>'+(late?' <span class="tag t-late">逾期</span>':'')+(s.eta?' <span class="muted">建議第 '+(take.indexOf(s)+1)+' 站</span>':'')+'<br><span class="muted">'+its.map(x=>esc(x.name)+' '+x.qty+esc(x.unit)).join('、')+'</span></span></button>'}).join('')+
+      '<button type="button" class="b pri" data-depart="1"'+(sel.length?'':' disabled')+'>裝車出發（'+sel.length+' 站）</button>'}
+  if(wait.length)h+='<div class="lbl">還在生產／備貨中</div>'+wait.map(s=>'<div class="card"><b>'+esc(s.customer)+'</b>'+(s.items.some(i=>!i.ready&&i.shipDate<d.date)?' <span class="tag t-late">逾期</span>':'')+'<span class="muted">'+s.items.filter(i=>!i.ready).map(x=>esc(x.name)+' '+x.qty+esc(x.unit)).join('、')+'</span></div>').join('');
+  if(other.length)h+='<div class="lbl">其他司機車上</div>'+other.map(s=>'<div class="stop"><span class="num">·</span><span style="flex:1"><b>'+esc(s.customer)+'</b><br><span class="muted">'+esc([...new Set(s.items.map(i=>i.claimedBy).filter(Boolean))].join('、'))+' 帶走</span></span></div>').join('');
+  if(done.length)h+='<div class="lbl">今天完成</div>'+done.map(s=>'<div class="stop"><span class="num '+(s.status==='delivered'?'ok':'bad')+'">'+(s.status==='delivered'?'✓':'!')+'</span><span style="flex:1"><b>'+esc(s.customer)+'</b><br><span class="muted">'+(s.status==='delivered'?'已送達 '+hm(s.doneAt):'異常：'+esc(s.issue))+(s.by?' · '+esc(s.by):'')+'</span></span></div>').join('');
+  h+='</div>';a.innerHTML=h;
+}
+document.addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.me){S.me=b.dataset.me;store.set('tsb_driver',S.me);draw();return}
+  if(b.dataset.sw){S.me='';store.del('tsb_driver');draw();return}
+  if(b.dataset.pick!=null){S.pick[b.dataset.pick]=!S.pick[b.dataset.pick];draw();return}
+  if(b.dataset.depart){const ids=[];S.d.stops.filter(s=>S.pick[s.customer]).forEach(s=>s.items.forEach(i=>{if(i.ready&&!i.status&&!i.claimedBy)ids.push(i.id)}));
+    run(()=>api('POST','/driver-api/depart',{driver:S.me,taskIds:ids}),'出發！路上小心').then(()=>{S.pick={}});return}
+  if(b.dataset.rel){run(()=>api('POST','/driver-api/release',{driver:S.me,taskIds:b.dataset.rel.split(',').map(Number)}),'已放回，其他司機可以帶');return}
+  if(b.dataset.deliver){if(!S.cur)return;if(b.dataset.deliver==='photo'){const c=$('#cam');c.value='';c.click()}else deliver(S.cur,null);return}
+  if(b.dataset.fail){failSheet(S.cur);return}
+});
+async function run(fn,ok){if(S.busy)return;S.busy=true;try{await fn();if(ok)toast(ok,null,4000)}catch(e){toast(e.message,null,6000)}finally{S.busy=false;await load()}}
+$('#cam').addEventListener('change',async()=>{const f=$('#cam').files[0];if(!f||!S.cur)return;let img=null;try{img=await shrink(f)}catch(e){toast('照片處理失敗，改成直接送達',null,4000)}deliver(S.cur,img)});
+function shrink(file){return new Promise((ok,no)=>{const u=URL.createObjectURL(file),im=new Image();im.onload=()=>{const k=Math.min(1,1280/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);c.getContext('2d').drawImage(im,0,0,c.width,c.height);URL.revokeObjectURL(u);let q=.62,s=c.toDataURL('image/jpeg',q);while(s.length>1100000&&q>.3){q-=.12;s=c.toDataURL('image/jpeg',q)}ok(s)};im.onerror=()=>no(new Error('bad'));im.src=u})}
+async function deliver(stop,img){
+  if(S.busy)return;S.busy=true;draw();
+  const ids=mineOf(stop).map(i=>i.id),at=new Date().toISOString();
+  try{
+    await api('POST','/driver-api/done',{driver:S.me,taskIds:ids,at});
+    let warn='';
+    if(img){try{await api('POST','/driver-api/photo',{driver:S.me,taskIds:ids,img})}catch(e){warn='（照片沒傳成功）'}}
+    if(stop.lat==null&&navigator.geolocation)navigator.geolocation.getCurrentPosition(p=>{api('POST','/driver-api/geo',{taskIds:ids,lat:p.coords.latitude,lng:p.coords.longitude,acc:p.coords.accuracy}).catch(()=>{})},()=>{},{enableHighAccuracy:true,timeout:15000,maximumAge:60000});
+    if(navigator.vibrate)navigator.vibrate(60);
+    toast(stop.customer+' 已送達 '+hm(at)+warn,()=>run(()=>api('POST','/driver-api/undo',{taskIds:ids}),'已復原'));
+  }catch(e){toast(e.message,null,6000)}
+  S.busy=false;await load();
+}
+function failSheet(stop){if(!stop)return;const rs=S.d.reasons||['客戶不在','拒收','地址找不到','其他'];
+  $('#sheet').innerHTML='<div class="sheet"><div class="in" role="dialog" aria-label="回報問題"><b style="font-size:20px">'+esc(stop.customer)+' 發生什麼事？</b>'+rs.map(r=>'<button type="button" class="opt" data-why="'+esc(r)+'">'+esc(r)+'</button>').join('')+'<input class="inp" id="whynote" placeholder="補充說明（可不填）" style="font-size:17px"><button type="button" class="b" data-cancel="1">取消</button></div></div>';
+  $('#sheet').onclick=e=>{const b=e.target.closest('button');if(!b){if(e.target.classList.contains('sheet'))$('#sheet').innerHTML='';return}
+    if(b.dataset.cancel){$('#sheet').innerHTML='';return}
+    if(b.dataset.why){const ids=mineOf(stop).map(i=>i.id),note=($('#whynote')||{}).value||'';$('#sheet').innerHTML='';
+      run(()=>api('POST','/driver-api/fail',{driver:S.me,taskIds:ids,issue:b.dataset.why,note,at:new Date().toISOString()}),'已回報，辦公室會看到')}}}
+load();
+})();
+</script>
+</body>
+</html>
