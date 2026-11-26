@@ -140,6 +140,19 @@ async function migrate() {
       last_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (customer, product_id)
     );
+    CREATE TABLE IF NOT EXISTS line_msgs (
+      id SERIAL PRIMARY KEY,
+      event_id TEXT UNIQUE,
+      msg_id TEXT,
+      group_id TEXT NOT NULL DEFAULT '',
+      text TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'new',
+      task_ids JSONB NOT NULL DEFAULT '[]',
+      sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      handled_at TIMESTAMPTZ,
+      handled_by TEXT NOT NULL DEFAULT ''
+    );
     CREATE TABLE IF NOT EXISTS stock_moves (
       id SERIAL PRIMARY KEY,
       product_id INTEGER NOT NULL,
@@ -271,6 +284,63 @@ app.use((req, res, next) => {
   next();
 });
 app.get('/robots.txt', (req, res) => res.type('text/plain').send('User-agent: *\nDisallow: /\n'));
+
+/* ---------- LINE 叫貨群機器人（Messaging API webhook） ----------
+   Only requests signed with LINE_CHANNEL_SECRET are accepted. Only groups approved in 設定 are read,
+   and only messages that look like an order (a number + 桶/箱/瓶/打/件/罐/支) are kept; chat is dropped. */
+const LINE_ORDER_RE = /[0-9０-９零〇一二兩两三四五六七八九十百]+\s*(桶|箱|瓶|打|件|罐|支)/;
+async function lineStore(events) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(`SELECT data->'lineGroups' AS g FROM config WHERE id=1 FOR UPDATE`);
+    const lg = (rows[0] && rows[0].g) || {};
+    lg.allowed = Array.isArray(lg.allowed) ? lg.allowed : []; lg.pending = Array.isArray(lg.pending) ? lg.pending : [];
+    let cfgChanged = false, added = 0;
+    for (const ev of events) {
+      const src = (ev && ev.source) || {};
+      const gid = String(src.groupId || src.roomId || '').slice(0, 64);
+      if (!gid) continue; // one-to-one chats with the bot are ignored
+      const isText = ev.type === 'message' && ev.message && ev.message.type === 'text';
+      if (!lg.allowed.some((g) => g.id === gid)) {
+        if (ev.type === 'join' || isText) {
+          const p = lg.pending.find((g) => g.id === gid);
+          const sample = isText ? String(ev.message.text).replace(/\s+/g, ' ').slice(0, 30) : '';
+          if (p) { if (sample) { p.sample = sample; cfgChanged = true; } }
+          else if (lg.pending.length < 10) { lg.pending.push({ id: gid, at: new Date().toISOString(), sample }); cfgChanged = true; }
+        }
+        continue;
+      }
+      if (!isText) continue;
+      const text = String(ev.message.text || '').slice(0, 2000);
+      if (!LINE_ORDER_RE.test(text.normalize('NFKC'))) continue;
+      const r = await client.query(
+        `INSERT INTO line_msgs (event_id, msg_id, group_id, text, sent_at) VALUES ($1,$2,$3,$4,to_timestamp($5/1000.0)) ON CONFLICT (event_id) DO NOTHING`,
+        [String(ev.webhookEventId || ev.message.id).slice(0, 80), String(ev.message.id || '').slice(0, 40), gid, text, Number(ev.timestamp) || Date.now()]);
+      added += r.rowCount;
+    }
+    if (cfgChanged) await client.query(`UPDATE config SET data = jsonb_set(data, '{lineGroups}', $1::jsonb) WHERE id=1`, [JSON.stringify(lg)]);
+    await client.query(`DELETE FROM line_msgs WHERE (status <> 'new' AND created_at < now() - interval '14 days') OR created_at < now() - interval '60 days'`);
+    if (added || cfgChanged) await bump(client);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}
+app.post('/line/webhook', express.raw({ type: '*/*', limit: '1mb' }), async (req, res) => {
+  const secret = process.env.LINE_CHANNEL_SECRET || '';
+  if (!secret) return res.status(503).send('LINE not configured');
+  const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  const a = Buffer.from(String(req.get('x-line-signature') || ''));
+  const b = Buffer.from(require('crypto').createHmac('sha256', secret).update(raw).digest('base64'));
+  if (a.length !== b.length || !require('crypto').timingSafeEqual(a, b)) return res.status(401).send('bad signature');
+  let body;
+  try { body = JSON.parse(raw.toString('utf8')); } catch (e) { return res.status(400).send('bad json'); }
+  try {
+    const evs = Array.isArray(body.events) ? body.events.slice(0, 100) : [];
+    if (evs.length) await lineStore(evs);
+    res.status(200).send('ok');
+  } catch (e) { console.error('line webhook:', e.message); res.status(500).send('error'); } // non-2xx lets LINE redeliver
+});
+
 app.use(express.json({ limit: '3mb' }));
 
 app.get('/healthz', (req, res) => res.send('ok'));
@@ -329,9 +399,10 @@ app.get('/api/state', wrap(async (req, res) => {
     recentLots,
     stock: stockBal.rows.map((r) => ({ productId: r.product_id, name: r.name, unit: r.unit, lot: r.lot, expiry: r.expiry || '', qty: r.qty, at: r.at })),
     stockLog: stockLog.rows.map((r) => ({ id: r.id, productId: r.product_id, name: r.product_name, unit: r.unit, lot: r.lot, expiry: r.expiry || '', qty: r.qty, kind: r.kind, customer: r.customer, operator: r.operator, note: r.note, at: r.created_at })),
-    config: (({ driverPin, ...c }) => ({ ...c, driverPinSet: !!driverPin, drivers: driversOf(c) }))(config),
+    config: (({ driverPin, ...c }) => ({ ...c, driverPinSet: !!driverPin, drivers: driversOf(c), lineReady: !!process.env.LINE_CHANNEL_SECRET }))(config),
     now: taipeiParts(),
     plan, aps,
+    lineInbox: (await pool.query(`SELECT id, text, sent_at FROM line_msgs WHERE status='new' ORDER BY sent_at DESC, id DESC LIMIT 50`)).rows.map((r) => ({ id: r.id, text: r.text, at: r.sent_at })),
     runs: (await pool.query(`SELECT id, at, reason, summary FROM plan_runs ORDER BY id DESC LIMIT 30`)).rows.map((r) => ({ id: r.id, at: r.at, reason: r.reason, diff: r.summary.diff, late: r.summary.late, overload: r.summary.overload, undo: !!r.summary.undo })),
   });
 }));
@@ -1586,9 +1657,70 @@ app.put('/api/config', wrap(async (req, res) => {
   const cur = await getConfig();
   delete c.driverPinSet;
   if (cur.driverPin) c.driverPin = cur.driverPin; else delete c.driverPin;
+  if (cur.aliases) c.aliases = cur.aliases; else delete c.aliases;
+  if (cur.lineGroups) c.lineGroups = cur.lineGroups; else delete c.lineGroups; // changed only through /api/line/groups
+  delete c.lineReady; // learned LINE wording is only changed through /api/aliases
   await pool.query(`UPDATE config SET data=$1 WHERE id=1`, [JSON.stringify(c)]);
   await bump();
   res.json({ ok: true });
+}));
+
+/* LINE inbox: mark a message as turned into orders / not an order */
+app.post('/api/line/inbox/:id', wrap(async (req, res) => {
+  const b = req.body || {};
+  const st = str(b.status, 10);
+  if (!['done', 'dismissed', 'new'].includes(st)) throw new UserError('狀態不對');
+  const ids = (Array.isArray(b.taskIds) ? b.taskIds : []).map((x) => parseInt(x, 10)).filter((x) => x > 0).slice(0, 30);
+  const { rowCount } = await pool.query(`UPDATE line_msgs SET status=$1, task_ids=$2::jsonb, handled_at=now(), handled_by=$3 WHERE id=$4`, [st, JSON.stringify(ids), str(b.operator, 50), req.params.id]);
+  if (!rowCount) throw new UserError('找不到這則 LINE 訊息');
+  await bump();
+  res.json({ ok: true });
+}));
+/* LINE groups the bot may read: approve a group that the bot was invited to, or stop reading one */
+app.post('/api/line/groups', wrap(async (req, res) => {
+  const b = req.body || {};
+  const action = str(b.action, 10), id = str(b.id, 64), name = str(b.name, 30) || 'LINE 叫貨群';
+  if (!['allow', 'remove'].includes(action) || !id) throw new UserError('參數不對');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(`SELECT data->'lineGroups' AS g FROM config WHERE id=1 FOR UPDATE`);
+    const lg = (rows[0] && rows[0].g) || {};
+    lg.allowed = Array.isArray(lg.allowed) ? lg.allowed : []; lg.pending = Array.isArray(lg.pending) ? lg.pending : [];
+    lg.pending = lg.pending.filter((g) => g.id !== id);
+    lg.allowed = lg.allowed.filter((g) => g.id !== id);
+    if (action === 'allow') lg.allowed.push({ id, name, at: new Date().toISOString() });
+    await client.query(`UPDATE config SET data = jsonb_set(data, '{lineGroups}', $1::jsonb) WHERE id=1`, [JSON.stringify(lg)]);
+    await bump(client);
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+}));
+
+/* remember how LINE messages name products / customers (learned when an order pasted from LINE is saved) */
+app.post('/api/aliases', wrap(async (req, res) => {
+  const b = req.body || {};
+  const P = (Array.isArray(b.products) ? b.products : []).slice(0, 50), C = (Array.isArray(b.customers) ? b.customers : []).slice(0, 10);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(`SELECT data->'aliases' AS a FROM config WHERE id=1 FOR UPDATE`);
+    const al = (rows[0] && rows[0].a) || {};
+    al.p = al.p || {}; al.c = al.c || {};
+    const ids = new Set((await client.query('SELECT id FROM products')).rows.map((r) => r.id));
+    for (const x of P) {
+      const k = str(x.key, 60), pid = parseInt(x.productId, 10), cu = str(x.customer, 100);
+      if (!k || !ids.has(pid)) continue;
+      delete al.p[k]; al.p[k] = pid;
+      if (cu) { delete al.p[cu + '|' + k]; al.p[cu + '|' + k] = pid; }
+    }
+    for (const x of C) { const k = str(x.key, 60), n = str(x.name, 100); if (k.length >= 2 && n) { delete al.c[k]; al.c[k] = n; } }
+    for (const m of [al.p, al.c]) { const ks = Object.keys(m); for (let i = 0; i < ks.length - 3000; i++) delete m[ks[i]]; }
+    await client.query(`UPDATE config SET data = jsonb_set(data, '{aliases}', $1::jsonb) WHERE id=1`, [JSON.stringify(al)]);
+    await bump(client);
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }));
 
 /* export */
