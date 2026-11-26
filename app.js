@@ -1659,7 +1659,8 @@ function renderRecords(){
   const v=$('#v-records'),q=S.q.trim().toLowerCase();
   const rows=S.done.filter(t=>!q||[t.lot,t.customer,t.productName,t.operator,t.shipMethod,(t.matDate||'')+(t.matArr||''),(t.contents||[]).map(c=>c.lot+' '+c.name).join(' ')].join(' ').toLowerCase().includes(q));
   let h='<header class="pg-head"><h1>生產紀錄</h1><p>用批號、客戶或原料批反查，每一筆都有完成時間與操作人</p></header><div class="row rec-bar"><input id="rq" placeholder="搜尋批號、客戶、品項、原料批（例：0913B）" value="'+esc(S.q)+'" style="flex:1;min-width:220px">'+
-    '<button class="btnlink" id="rexp" type="button">匯出 Excel（CSV）</button></div>';
+    '<button class="btnlink" id="rexp" type="button">匯出 Excel（CSV）</button></div>'+
+    '<div class="row rec-bar" style="margin-top:8px;align-items:center"><b>列印出貨單</b><input type="date" id="dn-date" value="'+esc(S.dnDate||today())+'" style="max-width:190px"><select id="dn-meth" style="max-width:170px">'+['','公司配送','物流配送','門市自取'].map(m=>'<option value="'+m+'"'+((S.dnMeth===undefined?'公司配送':S.dnMeth)===m?' selected':'')+'>'+(m||'全部出貨方式')+'</option>').join('')+'</select><button class="btnlink" id="dn-print" type="button">列印</button><span class="hint">每位客戶一張，帶入批號與庫存出貨的有效日期</span></div>';
   if(!S.done.length)h+='<div class="empty"><b>還沒有生產紀錄</b>在看板上按「完成生產」後，紀錄會出現在這裡，可以用批號回查。</div>';
   else h+='<p class="hint">共 '+rows.length+' 筆</p><div class="tbl-wrap"><table><thead><tr><th>完成時間</th><th>批號</th><th>品項</th><th>數量</th><th>客戶</th><th>出貨日</th><th>出貨方式</th><th>操作人</th><th></th></tr></thead><tbody>'+rows.map(t=>
    '<tr><td class="mono">'+fmtTime(t.completedAt)+'</td><td class="lotcell">'+(t.contents?t.contents.map(c=>'<div><span class="stamp sm">'+esc(c.lot)+'</span> <span class="hint" style="font-family:var(--f-body);font-weight:400">'+esc(shortName(c.name))+'　'+esc(c.date.slice(5).replace('-','/'))+'</span></div>').join(''):(t.shipLots&&t.shipLots.length?t.shipLots.map(x=>'<div><span class="stamp sm">'+esc(x.lot)+'</span> <span class="hint" style="font-family:var(--f-body);font-weight:400">×'+num(x.qty)+'　'+(x.expiry?'效期 '+esc(x.expiry.replace(/-/g,'/')):'效期未填')+'</span></div>').join(''):'<span class="stamp">'+esc(t.lot)+'</span>'))+(t.lotHistory&&t.lotHistory.length?'<div class="hint">曾修改 '+t.lotHistory.length+' 次</div>':'')+'</td><td>'+esc(t.productName)+'</td><td class="mono">'+qtyU(t)+(t.orderedQty&&t.orderedQty!==t.qty?'<div class="hint">訂單 '+num(t.orderedQty)+'</div>':'')+'</td><td>'+esc(t.customer)+'</td><td class="mono">'+esc(t.shipDate)+'</td><td>'+(t.shipMethod?methodPill(t):'<span class="hint">—</span>')+'</td><td>'+esc(t.operator)+'</td>'+
@@ -1738,6 +1739,29 @@ $('#modal').addEventListener('click',async e=>{
   try{const r=await api('POST','/api/tasks/'+MM.t.id+'/method',{method:MM.m,address:MM.addr.trim(),siblings:MM.sib});MM=null;$('#modal').innerHTML='';toast('已改，共 '+r.changed+' 筆');await refresh(true);render(true)}
   catch(er){if(MM){MM.busy=false;MM.err=er.message;drawMeth()}}
 });
+/* 出貨單：one sheet per customer for a ship date, lots and stock expiry filled in */
+function printNotes(date,meth){
+  const ts=S.open.concat(S.done).filter(t=>t.shipDate===date&&(!meth||t.shipMethod===meth)&&!(t.note||'').includes('已轉庫存'));
+  if(!ts.length){toast('這一天沒有'+(meth||'')+'出貨的訂單');return}
+  const by={};ts.forEach(t=>{(by[t.customer]=by[t.customer]||[]).push(t)});
+  const d8=date.replace(/-/g,''),fmtD=x=>x?x.replace(/-/g,'/'):'';
+  const pages=Object.keys(by).sort((x,y)=>x.localeCompare(y,'zh-Hant')).map((cu,k)=>{
+    const c=S.customers.find(x=>x.name===cu)||{},rows=by[cu];
+    const tr=rows.map((t,i)=>{
+      const lots=(t.shipLots&&t.shipLots.length)?t.shipLots:null;
+      const lotTxt=lots?lots.map(l=>esc(l.lot)+(lots.length>1?' × '+num(l.qty):'')).join('<br>'):esc(t.lot||'');
+      const expTxt=lots?lots.map(l=>esc(fmtD(l.expiry||''))).join('<br>'):'';
+      return '<tr><td class="c">'+(i+1)+'</td><td>'+esc(t.productName)+(t.note?'<div class="nt">備註：'+esc(t.note)+'</div>':'')+'</td><td class="r">'+num(t.qty)+'</td><td class="c">'+esc(t.unit||'')+'</td><td class="m">'+lotTxt+'</td><td class="m">'+expTxt+'</td><td class="c">'+(t.status==='done'?'':'<b class="w">未完工</b>')+'</td></tr>'}).join('');
+    return '<section class="pg"><div class="hd"><div><div class="co">統香蜂蜜有限公司</div><div class="sub">TS Beehoney Co., Ltd.　｜　尋蜜趣</div></div><div class="tt">出 貨 單</div></div>'+
+      '<table class="meta"><tr><td><span>客戶</span>'+esc(cu)+'</td><td><span>出貨日</span>'+fmtD(date)+'</td></tr><tr><td><span>地址</span>'+esc(c.address||'')+'</td><td><span>單號</span>'+d8+'-'+String(k+1).padStart(2,'0')+'</td></tr><tr><td><span>出貨方式</span>'+esc(rows[0].shipMethod||'')+'</td><td><span>開單人</span>'+esc(rows[0].createdBy||'')+'</td></tr></table>'+
+      '<table class="it"><thead><tr><th style="width:6%">#</th><th>品名</th><th style="width:9%;text-align:right">數量</th><th style="width:7%">單位</th><th style="width:20%">批號</th><th style="width:14%">有效日期</th><th style="width:9%"></th></tr></thead><tbody>'+tr+'</tbody></table>'+
+      '<div class="sg"><div>出貨人：</div><div>送貨人：</div><div>客戶簽收：</div></div><div class="ft">www.tsbeehoney.com.tw</div></section>'}).join('');
+  const css='@page{size:A4;margin:14mm}*{box-sizing:border-box}body{font-family:"Microsoft JhengHei","微軟正黑體","PingFang TC","Noto Sans TC",sans-serif;color:#1F2A24;margin:0}.pg{page-break-after:always;min-height:260mm;position:relative}.pg:last-child{page-break-after:auto}.hd{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #1B3D31;padding-bottom:8px}.co{font-size:24px;font-weight:700;color:#1B3D31}.sub{font-size:12px;color:#C99A2E;margin-top:2px}.tt{font-size:26px;font-weight:700;color:#1B3D31;letter-spacing:.2em}.meta{width:100%;margin:12px 0;border-collapse:collapse;font-size:14px}.meta td{padding:5px 4px;width:50%}.meta span{display:inline-block;min-width:68px;color:#6b6b6b}.it{width:100%;border-collapse:collapse;font-size:14px}.it th{background:#1B3D31;color:#fff;padding:7px 6px;font-weight:600;text-align:left}.it td{border-bottom:1px solid #d8d2c4;padding:8px 6px;vertical-align:top}.c{text-align:center}.r{text-align:right}.m{font-family:Consolas,monospace}.nt{font-size:12px;color:#6b6b6b;margin-top:2px}.w{color:#b3261e}.sg{display:flex;gap:24px;margin-top:40px;font-size:14px}.sg div{flex:1;border-bottom:1px solid #1F2A24;padding-bottom:28px}.ft{position:absolute;bottom:0;right:0;font-size:11px;color:#C99A2E}';
+  const w=window.open('','_blank');if(!w){toast('瀏覽器擋住了新視窗，請允許彈出視窗後再按一次');return}
+  w.document.write('<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><title>出貨單 '+fmtD(date)+'</title><style>'+css+'</style></head><body>'+pages+'</body></html>');
+  w.document.close();w.focus();setTimeout(()=>{try{w.print()}catch(_){}},500)}
+$('#v-records').addEventListener('change',e=>{if(e.target.id==='dn-date')S.dnDate=e.target.value;if(e.target.id==='dn-meth')S.dnMeth=e.target.value});
+$('#v-records').addEventListener('click',e=>{if(e.target.closest('#dn-print')){printNotes(($('#dn-date')||{}).value||today(),($('#dn-meth')||{}).value||'');return}});
 $('#v-records').addEventListener('click',e=>{const sb=e.target.closest('button[data-rtostock]');if(sb){const t=S.done.find(x=>x.id===+sb.dataset.rtostock);if(t)openToStock(t);return}const mb=e.target.closest('button[data-rmeth]');if(mb){const t=S.done.find(x=>x.id===+mb.dataset.rmeth);if(t){const c=S.customers.find(x=>x.name===t.customer);MM={t,m:t.shipMethod||'公司配送',addr:(c&&c.address)||'',sib:true,err:'',busy:false};drawMeth()}return}const b=e.target.closest('button[data-rlot]');if(!b)return;const t=S.done.find(x=>x.id===+b.dataset.rlot);if(t)openLotEdit(t)});
 function openLotEdit(t){
   $('#modal').innerHTML='<div class="scrim" id="lscrim"><form class="sheet" id="lform" role="dialog" aria-modal="true" aria-label="修改批號"><div class="pname">修改批號</div><div class="hint">'+esc(t.productName)+' × '+qtyU(t)+'　'+esc(t.customer)+'</div>'+
