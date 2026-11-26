@@ -949,7 +949,7 @@ function isAuto(cfg, cat) { return !!(cfg.cats[cat] && cfg.cats[cat].auto); }
 function parseMat(lot) { const m = /^[A-Z][A-Z](\d{4})([A-Z]?)-/.exec(lot); return m ? { matDate: m[1], matArr: m[2] } : { matDate: null, matArr: null }; }
 async function nextSeq(client, prefix) {
   const { rows } = await client.query(
-    `SELECT lot FROM tasks WHERE status='done' AND lot LIKE $1`, [prefix + '-%']);
+    `SELECT lot FROM tasks WHERE status='done' AND lot LIKE $1 UNION SELECT lot FROM stock_moves WHERE kind='make' AND lot LIKE $1`, [prefix + '-%']);
   let max = -1;
   const re = new RegExp('^' + prefix + '-([A-Z])$');
   rows.forEach((r) => { const m = re.exec(r.lot || ''); if (m) max = Math.max(max, m[1].charCodeAt(0) - 65); });
@@ -1952,6 +1952,10 @@ app.post('/api/deliveries/reopen', wrap(async (req, res) => {
   await bump();
   res.json({ ok: true });
 }));
+
+// 第二代：一個角色一個畫面（/v2），與舊看板共用同一個資料庫
+require('./v2')(app, { pool, wrap, UserError, str, isDate, bump, getConfig, taipeiDate, lotPrefix, isAuto, LOT_RE, NO_LOT, UNITS,
+  toLedger, defaultExpiry, dRoute, driversOf, rowTask, nextSeq });
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/app.js', (req, res) => res.sendFile(path.join(__dirname, 'app.js')));
