@@ -1864,6 +1864,22 @@ dRoute('post', '/done', async (req, res) => {
   await bump();
   res.json({ ok: true });
 });
+// driver's phone position at 配送完成 → fills in a customer's map location when the customer has none yet
+dRoute('post', '/geo', async (req, res) => {
+  const b = req.body || {}, ids = idList(b);
+  const lat = Number(b.lat), lng = Number(b.lng), acc = Number(b.acc);
+  if (!ids.length || !(lat > 21.5 && lat < 26.5 && lng > 118 && lng < 123)) return res.json({ ok: true, saved: 0 });
+  if (!(acc > 0 && acc <= 150)) return res.json({ ok: true, saved: 0 });
+  const { rows } = await pool.query(`SELECT DISTINCT customer FROM tasks WHERE id = ANY($1::int[]) AND ship_method='公司配送' AND delivery_status='delivered'`, [ids]);
+  let saved = 0;
+  for (const r of rows) {
+    const u = await pool.query(`INSERT INTO customers (name, lat, lng, geo_precision, geo_tried_at) VALUES ($1,$2,$3,'driver',now())
+      ON CONFLICT (name) DO UPDATE SET lat=EXCLUDED.lat, lng=EXCLUDED.lng, geo_precision='driver', geo_tried_at=now() WHERE customers.lat IS NULL`, [r.customer, lat, lng]);
+    saved += u.rowCount;
+  }
+  if (saved) await bump();
+  res.json({ ok: true, saved });
+});
 dRoute('post', '/fail', async (req, res) => {
   const b = req.body || {}, driver = str(b.driver, 20), ids = idList(b), issue = str(b.issue, 40);
   if (!driversOf(req.cfg).includes(driver)) throw new UserError('請先選擇司機');
