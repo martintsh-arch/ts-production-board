@@ -108,8 +108,10 @@ function cardsOf(){
       o.done.push(mk(fin,{status:ok?'delivered':'failed',doneAt:fin.map(i=>i.doneAt).filter(Boolean).sort().pop()||null,by:(fin.find(i=>i.by)||{}).by||'',issue:bad?bad.issue:''}))}
   });
   o.mine.sort((a,b)=>a.seq-b.seq);
+  const first=c=>c.items.map(i=>i.shipDate||'9').sort()[0];o.pick.sort((a,b)=>first(a).localeCompare(first(b)));
   return o;
 }
+let WAKE=0;
 async function load(){
   try{
     await flush();
@@ -120,8 +122,13 @@ async function load(){
     if(e.status===401||e.code==='pin'){LS.del('tsb_dpin');PIN='';ERR='密碼不對'}
     else if(e.status===403){ERR='尚未設定司機密碼，請聯絡辦公室'}
     else if(e.status===429){ERR=e.message}
-    else if(!D)ERR='連不上系統，請確認網路後重試';
+    else if(!D){
+      // free hosting sleeps when idle: the first visit of the day waits ~30 s, so keep retrying on its own
+      if((!e.status||e.status===502||e.status===503||e.status===504)&&WAKE<24){WAKE++;ERR='系統啟動中（約 30 秒），會自動重試…';setTimeout(load,5000)}
+      else ERR='連不上系統，請確認網路後重試';
+    }
   }
+  if(D)WAKE=0;
   render();
 }
 function pinScreen(){
@@ -143,11 +150,12 @@ function stopHTML(s,idx,mode){
     if(s.win)tags.push('<span class="tag">收貨 '+esc(s.win.open)+'–'+esc(s.win.close)+(s.win.lunchFrom?'（午休 '+esc(s.win.lunchFrom)+'–'+esc(s.win.lunchTo)+'）':'')+'</span>');
   }
   const lead=mode==='mine'?'<div class="seq">'+(idx+1)+'</div>':mode==='done'?'<div class="seq">'+(s.status==='delivered'?'✓':'!')+'</div>':'';
-  let h='<div class="'+cls+'"><div class="top">'+lead+'<div style="flex:1;min-width:0"><div class="name">'+esc(s.customer)+'</div><div class="addr">'+(esc(s.address)||'<span style="color:var(--bad)">沒有地址，請打給辦公室</span>')+'</div>'+tags.join('')+'</div></div>';
+  let h='<div class="'+cls+'"><div class="top">'+lead+'<div style="flex:1;min-width:0"><div class="name">'+esc(s.customer)+'</div><div class="addr">'+(esc(s.address)||(s.lat!=null?'<span>沒有地址（已記錄送貨位置，可導航）</span>':'<span style="color:var(--bad)">沒有地址，請打給辦公室</span>'))+'</div>'+tags.join('')+'</div></div>';
   h+='<div class="items">'+s.items.map(i=>{
     const pk=mode==='pick'&&i.ready;
     const chk=pk?'<button class="chk" data-sel="'+i.id+'" aria-pressed="'+SEL.has(i.id)+'" aria-label="勾選這筆">'+(SEL.has(i.id)?'✓':'')+'</button>':'';
-    const dt=(i.shipDate&&i.shipDate!==D.date&&mode!=='done')?'<small>出貨日 '+esc(i.shipDate.slice(5).replace('-','/'))+'</small>':'';
+    const late=i.shipDate&&i.shipDate<D.date&&mode!=='done'?Math.round((Date.parse(D.date)-Date.parse(i.shipDate))/864e5):0;
+    const dt=late?'<small style="color:var(--bad);font-weight:700">已逾期 '+late+' 天（出貨日 '+esc(i.shipDate.slice(5).replace('-','/'))+'）</small>':(i.shipDate&&i.shipDate!==D.date&&mode!=='done')?'<small>出貨日 '+esc(i.shipDate.slice(5).replace('-','/'))+'</small>':'';
     return '<div class="it'+(i.ready?'':' wait')+'" style="align-items:center">'+chk+'<span style="flex:1;min-width:0">'+esc(i.name)+(i.lot?'<small>'+esc(i.lot)+'</small>':'')+(i.note?'<small>備註：'+esc(i.note)+'</small>':'')+(i.ready?'':'<small>尚未完工</small>')+dt+'</span><b>'+esc(i.qty)+'<span style="font-size:15px;font-family:var(--f)"> '+esc(i.unit)+'</span></b></div>';
   }).join('')+'</div>';
   if(mode==='pick'&&s.items.filter(i=>i.ready).length>1)h+='<div class="acts"><button class="ghost" data-all="'+k+'" style="grid-column:1/-1;min-height:44px">全選／取消這家做完的貨</button></div>';
@@ -186,12 +194,18 @@ function chime(kind){try{AC=AC||new (window.AudioContext||window.webkitAudioCont
   seq.forEach(([f,t0])=>{const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime+t0;o.type=kind==='ok'?'sine':'triangle';o.frequency.value=f;
     g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.2,t+.02);g.gain.exponentialRampToValueAtTime(.0001,t+.5);o.connect(g);g.connect(AC.destination);o.start(t);o.stop(t+.55)});
   if(kind==='ok'&&navigator.vibrate)navigator.vibrate([120,60,120])}catch(e){}}
+// remember where a customer without a map location is, from the phone's position when the goods are handed over
+function keepSpot(ids){try{
+  const st=(D&&D.stops||[]).find(s=>s.items.some(i=>ids.includes(i.id)));if(!st||st.lat!=null||!navigator.geolocation)return;
+  navigator.geolocation.getCurrentPosition(p=>{api('POST','/geo',{taskIds:ids,lat:p.coords.latitude,lng:p.coords.longitude,acc:p.coords.accuracy}).catch(()=>{})},()=>{},{enableHighAccuracy:true,timeout:12000,maximumAge:60000});
+}catch(e){}}
 async function act(path,body,label){
   if(path==='/done')chime('ok');else if(path==='/fail')chime('bad');
   const b={...body,driver:DRV,at:new Date().toISOString()};
   mark(b.taskIds,path,b.at,DRV,b.issue);
   lastUndo={label:label,ids:b.taskIds,t:Date.now()};setTimeout(()=>{if(lastUndo&&lastUndo.ids===b.taskIds){lastUndo=null;render()}},10000);
   render();
+  if(path==='/done')keepSpot(b.taskIds);
   try{await api('POST',path,b)}
   catch(e){
     if(e.status===400){ERR=e.message;lastUndo=null;await load();return}
