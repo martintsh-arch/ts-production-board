@@ -297,6 +297,7 @@ async function lineStore(events) {
     const lg = (rows[0] && rows[0].g) || {};
     lg.allowed = Array.isArray(lg.allowed) ? lg.allowed : []; lg.pending = Array.isArray(lg.pending) ? lg.pending : [];
     let cfgChanged = false, added = 0;
+    const fresh = [];
     for (const ev of events) {
       const src = (ev && ev.source) || {};
       const gid = String(src.groupId || src.roomId || '').slice(0, 64);
@@ -315,14 +316,16 @@ async function lineStore(events) {
       const text = String(ev.message.text || '').slice(0, 2000);
       if (!LINE_ORDER_RE.test(text.normalize('NFKC'))) continue;
       const r = await client.query(
-        `INSERT INTO line_msgs (event_id, msg_id, group_id, text, sent_at) VALUES ($1,$2,$3,$4,to_timestamp($5/1000.0)) ON CONFLICT (event_id) DO NOTHING`,
+        `INSERT INTO line_msgs (event_id, msg_id, group_id, text, sent_at) VALUES ($1,$2,$3,$4,to_timestamp($5/1000.0)) ON CONFLICT (event_id) DO NOTHING RETURNING id`,
         [String(ev.webhookEventId || ev.message.id).slice(0, 80), String(ev.message.id || '').slice(0, 40), gid, text, Number(ev.timestamp) || Date.now()]);
       added += r.rowCount;
+      if (r.rowCount) fresh.push({ id: r.rows[0].id, replyToken: String(ev.replyToken || '') });
     }
     if (cfgChanged) await client.query(`UPDATE config SET data = jsonb_set(data, '{lineGroups}', $1::jsonb) WHERE id=1`, [JSON.stringify(lg)]);
     await client.query(`DELETE FROM line_msgs WHERE (status <> 'new' AND created_at < now() - interval '14 days') OR created_at < now() - interval '60 days'`);
     if (added || cfgChanged) await bump(client);
     await client.query('COMMIT');
+    return fresh;
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }
 app.post('/line/webhook', express.raw({ type: '*/*', limit: '1mb' }), async (req, res) => {
@@ -336,8 +339,10 @@ app.post('/line/webhook', express.raw({ type: '*/*', limit: '1mb' }), async (req
   try { body = JSON.parse(raw.toString('utf8')); } catch (e) { return res.status(400).send('bad json'); }
   try {
     const evs = Array.isArray(body.events) ? body.events.slice(0, 100) : [];
-    if (evs.length) await lineStore(evs);
+    const fresh = evs.length ? await lineStore(evs) : [];
     res.status(200).send('ok');
+    // 機器人自動入單（在 v2.js）：看得懂的訊息直接建單，不確定的留在接單台給人確認
+    if (fresh.length && app.locals.lineAuto) app.locals.lineAuto(fresh).catch((e) => console.error('line auto:', e.message));
   } catch (e) { console.error('line webhook:', e.message); res.status(500).send('error'); } // non-2xx lets LINE redeliver
 });
 
@@ -786,8 +791,7 @@ app.post('/api/tasks', wrap(async (req, res) => {
   res.json(rowTask(rows[0]));
 }));
 
-app.post('/api/tasks/batch', wrap(async (req, res) => {
-  const b = req.body || {};
+async function createOrders(b) {
   const items = Array.isArray(b.items) ? b.items : [];
   if (!items.length) throw new UserError('請至少選一個品項');
   if (items.length > 50) throw new UserError('一次最多 50 個品項');
@@ -824,7 +828,10 @@ app.post('/api/tasks/batch', wrap(async (req, res) => {
   if (orders[0].shipMethod === '公司配送') await saveAddress(orders[0].customer, b.address);
   await autoPlan();
   geoKick();
-  res.json({ created: orders.length, ids: orders.map((o) => o.id) });
+  return { created: orders.length, ids: orders.map((o) => o.id) };
+}
+app.post('/api/tasks/batch', wrap(async (req, res) => {
+  res.json(await createOrders(req.body || {}));
 }));
 
 app.put('/api/tasks/:id', wrap(async (req, res) => {
@@ -1659,6 +1666,7 @@ app.put('/api/config', wrap(async (req, res) => {
   if (cur.driverPin) c.driverPin = cur.driverPin; else delete c.driverPin;
   if (cur.aliases) c.aliases = cur.aliases; else delete c.aliases;
   if (cur.lineGroups) c.lineGroups = cur.lineGroups; else delete c.lineGroups; // changed only through /api/line/groups
+  if ('lineAuto' in cur) c.lineAuto = cur.lineAuto; else delete c.lineAuto; // changed only through /api/v2/line-auto
   delete c.lineReady; // learned LINE wording is only changed through /api/aliases
   await pool.query(`UPDATE config SET data=$1 WHERE id=1`, [JSON.stringify(c)]);
   await bump();
@@ -1955,7 +1963,7 @@ app.post('/api/deliveries/reopen', wrap(async (req, res) => {
 
 // 第二代：一個角色一個畫面（/v2），與舊看板共用同一個資料庫
 require('./v2')(app, { pool, wrap, UserError, str, isDate, bump, getConfig, taipeiDate, lotPrefix, isAuto, LOT_RE, NO_LOT, UNITS,
-  toLedger, defaultExpiry, dRoute, driversOf, rowTask, nextSeq });
+  toLedger, defaultExpiry, dRoute, driversOf, rowTask, nextSeq, createOrders });
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/app.js', (req, res) => res.sendFile(path.join(__dirname, 'app.js')));
