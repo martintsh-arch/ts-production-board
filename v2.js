@@ -5,12 +5,14 @@ const path = require('path');
 
 module.exports = function mountV2(app, d) {
   const { pool, wrap, UserError, str, isDate, bump, getConfig, taipeiDate, lotPrefix, isAuto, LOT_RE, NO_LOT, UNITS,
-    toLedger, defaultExpiry, dRoute, driversOf, rowTask, nextSeq } = d;
+    toLedger, defaultExpiry, dRoute, driversOf, rowTask, nextSeq, createOrders } = d;
+  const LP = require('./lp');
 
   pool.query(`CREATE TABLE IF NOT EXISTS delivery_photos (
       id SERIAL PRIMARY KEY, task_ids INTEGER[] NOT NULL, customer TEXT NOT NULL DEFAULT '', driver TEXT NOT NULL DEFAULT '',
       img BYTEA NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
-    CREATE INDEX IF NOT EXISTS delivery_photos_tasks ON delivery_photos USING GIN (task_ids);`).catch((e) => console.error('v2 migrate', e.message));
+    CREATE INDEX IF NOT EXISTS delivery_photos_tasks ON delivery_photos USING GIN (task_ids);
+    UPDATE line_msgs SET status='new' WHERE status='working';`).catch((e) => console.error('v2 migrate', e.message));
 
   const send = (f) => (req, res) => { res.setHeader('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, f)); };
   app.get('/v2', send('v2.html'));
@@ -47,7 +49,7 @@ module.exports = function mountV2(app, d) {
   /* ---------- 狀態：各畫面共用 ---------- */
   app.get('/api/v2/state', wrap(async (req, res) => {
     const today = taipeiDate(new Date());
-    const [rev, open, active, products, cfg, customers, history, bal, makes, inbox, photos, lastLots] = await Promise.all([
+    const [rev, open, active, products, cfg, customers, history, bal, makes, inbox, photos, lastLots, autoMsgs] = await Promise.all([
       pool.query(`SELECT value FROM meta WHERE key='rev'`),
       pool.query(`SELECT * FROM tasks WHERE status='open'`),
       pool.query(`SELECT * FROM tasks WHERE status='done' AND (
@@ -69,6 +71,7 @@ module.exports = function mountV2(app, d) {
           SELECT product_id, lot, created_at AS at FROM stock_moves WHERE kind='make' AND lot <> '' AND created_at > now() - interval '400 days'
           UNION ALL SELECT product_id, lot, completed_at FROM tasks WHERE status='done' AND lot ~ '^[A-Z0-9]+(-[A-Z0-9]+)?$' AND NOT from_stock AND completed_at > now() - interval '400 days'
         ) x GROUP BY product_id, lot ORDER BY at DESC`),
+      pool.query(`SELECT id, text, sent_at, task_ids, handled_at FROM line_msgs WHERE status='auto' AND handled_at > now() - interval '2 days' ORDER BY id DESC LIMIT 30`),
     ]);
     const P = {}; products.rows.forEach((p) => { P[p.id] = p; });
     const lm = lotsMap(bal.rows);
@@ -106,7 +109,8 @@ module.exports = function mountV2(app, d) {
     res.json({
       rev: Number(rev.rows[0].value), today, now: new Date().toISOString(),
       cfg: { people: c.people || [], drivers: driversOf(c), cats: c.cats || {}, varieties: c.varieties || {}, shelfMonths: c.shelfMonths || 24,
-        aliases: c.aliases || { p: {}, c: {} }, lineReady: !!process.env.LINE_CHANNEL_SECRET, driverPinSet: !!driverPin },
+        aliases: c.aliases || { p: {}, c: {} }, lineReady: !!process.env.LINE_CHANNEL_SECRET, driverPinSet: !!driverPin,
+        lineAuto: c.lineAuto !== false, lineReply: !!process.env.LINE_CHANNEL_ACCESS_TOKEN },
       products: products.rows.map((p) => ({ id: p.id, name: p.name, cat: p.cat, variety: p.variety, code: p.code, active: p.active, packSize: p.pack_size, baseUnit: p.base_unit, noLot: !!p.no_lot, components: p.components || [] })),
       customers: customers.rows,
       history: history.rows.map((h) => [h.customer, h.product_id, h.times]),
@@ -116,6 +120,7 @@ module.exports = function mountV2(app, d) {
       makes: makes.rows.map((r) => ({ id: r.id, productId: r.product_id, name: r.product_name, unit: r.unit, lot: r.lot, expiry: r.expiry, qty: r.qty, operator: r.operator, at: r.created_at })),
       lastLots: last,
       lineInbox: inbox.rows.map((r) => ({ id: r.id, text: r.text, at: r.sent_at })),
+      lineAuto: autoMsgs.rows.map((r) => ({ id: r.id, text: r.text, at: r.sent_at, taskIds: r.task_ids || [], doneAt: r.handled_at })),
       photos: photos.rows.map((r) => r.id),
     });
   }));
@@ -266,6 +271,125 @@ module.exports = function mountV2(app, d) {
       await bump(client);
       await client.query('COMMIT');
       res.json({ ok: true });
+    } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+  }));
+
+  /* ---------- LINE 機器人自動入單 ----------
+     群組裡的叫貨訊息：客戶、品項、數量、單位、出貨方式全部確定 → 直接建單（開單人「LINE機器人」）；
+     只要有一項沒把握（新客戶、只寫「兩箱」沒寫品項、單位不明…）→ 整則留在接單台，給人確認後再建單。 */
+  const BOT = 'LINE機器人';
+  async function lpCtx() {
+    const [pr, cu, hi, cfg] = await Promise.all([
+      pool.query(`SELECT id, name, cat, variety, code, active, pack_size, base_unit FROM products`),
+      pool.query(`SELECT name, code FROM customers`),
+      pool.query(`SELECT customer, product_id, times FROM customer_products ORDER BY times DESC`),
+      getConfig(),
+    ]);
+    return {
+      products: pr.rows.map((p) => ({ id: p.id, name: p.name, cat: p.cat, variety: p.variety, code: p.code, active: p.active, packSize: p.pack_size, baseUnit: p.base_unit })),
+      customers: cu.rows, history: hi.rows.map((h) => [h.customer, h.product_id, h.times]),
+      aliases: cfg.aliases || { p: {}, c: {} }, today: taipeiDate(new Date()), cfg,
+    };
+  }
+  async function planBlock(b, ctx) {
+    const why = [];
+    if (!b.customer || !b.custSure || b.custNew || !ctx.customers.some((c) => c.name === b.customer)) why.push('客戶「' + (b.custRaw || b.customer || '?') + '」要確認');
+    if (!b.items.length) why.push('沒有品項');
+    const items = [];
+    for (const it of b.items) {
+      const p = ctx.products.find((x) => String(x.id) === String(it.p));
+      const q = parseInt(it.q, 10);
+      if (!p || !it.sure || it.fromHist || p.active === false) { why.push('「' + (it.raw || '沒寫品項') + '」對不到確定的品項'); continue; }
+      if (!(q > 0)) { why.push(p.name + ' 沒有數量'); continue; }
+      let u = it.u || '';
+      if (!u) {
+        const { rows } = await pool.query(`SELECT unit FROM tasks WHERE product_id=$1 AND unit <> '' ORDER BY (customer=$2) DESC, created_at DESC LIMIT 1`, [p.id, b.customer]);
+        u = rows[0] ? rows[0].unit : p.packSize ? '箱' : (p.baseUnit || '');
+      }
+      if (!UNITS.includes(u)) { why.push(p.name + ' 不知道單位'); continue; }
+      items.push({ productId: p.id, qty: q, unit: u, name: p.name, dz: it.dz ? (it.raw || '') + ' ' + it.dz + '（已換算 ' + it.q + ' 瓶）' : '' });
+    }
+    let method = b.methodMixed ? '' : (b.method || '');
+    if (!method && !b.methodMixed) {
+      const { rows } = await pool.query(`SELECT ship_method FROM tasks WHERE customer=$1 AND ship_method <> '' ORDER BY created_at DESC LIMIT 1`, [b.customer]);
+      method = rows[0] ? rows[0].ship_method : '';
+    }
+    if (!method) why.push('出貨方式要確認');
+    const date = b.date || ctx.today;
+    if (date < ctx.today) why.push('出貨日 ' + date + ' 已經過了');
+    const dzs = items.map((x) => x.dz).filter(Boolean);
+    const common = (b.notes || []).filter((n) => !dzs.includes(n)).join(' ');
+    items.forEach((x) => { x.note = [common, x.dz].filter(Boolean).join(' ').slice(0, 300); delete x.dz; });
+    return { ok: !why.length, why, body: { customer: b.customer, shipDate: date, shipMethod: method, note: common.slice(0, 300), urgent: !!b.urgent, createdBy: BOT, address: '', items } };
+  }
+  async function reply(token, text) {
+    const key = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+    if (!key || !token || typeof fetch !== 'function') return;
+    try {
+      const r = await fetch('https://api.line.me/v2/bot/message/reply', { method: 'POST', headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ replyToken: token, messages: [{ type: 'text', text: text.slice(0, 4900) }] }) });
+      if (!r.ok) console.error('line reply', r.status);
+    } catch (e) { console.error('line reply', e.message); }
+  }
+  const md = (iso) => { const [, m, dd] = iso.split('-'); return (+m) + '/' + (+dd); };
+  async function autoKey(m) {
+    const ctx = await lpCtx();
+    if (ctx.cfg.lineAuto === false) return;
+    const { rows } = await pool.query(`UPDATE line_msgs SET status='working' WHERE id=$1 AND status='new' RETURNING text`, [m.id]);
+    if (!rows[0]) return;
+    const ids = [];
+    try {
+      const blocks = LP.parse(rows[0].text, ctx);
+      const plans = [];
+      for (const b of blocks) plans.push(await planBlock(b, ctx));
+      if (!plans.length || plans.some((p) => !p.ok)) {
+        await pool.query(`UPDATE line_msgs SET status='new' WHERE id=$1`, [m.id]);
+        await bump();
+        const why = plans.flatMap((p) => p.why).slice(0, 4);
+        if (plans.length) await reply(m.replyToken, '收到，這則要辦公室確認後入單：\n' + why.map((x) => '・' + x).join('\n'));
+        return;
+      }
+      const lines = [];
+      for (const p of plans) {
+        const r = await createOrders(p.body);
+        ids.push(...r.ids);
+        lines.push(p.body.customer + '（' + md(p.body.shipDate) + ' ' + p.body.shipMethod + '）\n' + p.body.items.map((x) => '・' + x.name + ' ' + x.qty + ' ' + x.unit).join('\n'));
+      }
+      await pool.query(`UPDATE line_msgs SET status='auto', task_ids=$2::jsonb, handled_at=now(), handled_by=$3 WHERE id=$1`, [m.id, JSON.stringify(ids), BOT]);
+      await bump();
+      await reply(m.replyToken, '已自動入單 ✅\n' + lines.join('\n') + '\n有錯請到接單台按「撤銷」');
+    } catch (e) {
+      // 建到一半出錯：已建好的留著（標成自動入單，接單台可撤銷），一張都沒建就回到收件匣
+      await pool.query(`UPDATE line_msgs SET status=$2, task_ids=$3::jsonb, handled_at=now(), handled_by=$4 WHERE id=$1`, [m.id, ids.length ? 'auto' : 'new', JSON.stringify(ids), BOT]).catch(() => {});
+      await bump().catch(() => {});
+      throw e;
+    }
+  }
+  app.locals.lineAuto = async (msgs) => { for (const m of msgs) await autoKey(m); };
+
+  app.post('/api/v2/line-auto', wrap(async (req, res) => {
+    const on = (req.body || {}).on !== false;
+    await pool.query(`UPDATE config SET data = jsonb_set(data, '{lineAuto}', $1::jsonb) WHERE id=1`, [JSON.stringify(on)]);
+    await bump();
+    res.json({ ok: true, on });
+  }));
+  // 撤銷機器人建的單：還沒開始備貨的品項全部取消，訊息回到收件匣讓人重新確認
+  app.post('/api/v2/line-undo/:id', wrap(async (req, res) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(`SELECT * FROM line_msgs WHERE id=$1 AND status='auto' FOR UPDATE`, [req.params.id]);
+      const m = rows[0];
+      if (!m) throw new UserError('找不到這筆自動入單');
+      const ids = (m.task_ids || []).map(Number).filter(Boolean);
+      const { rows: ts } = await client.query(`SELECT id, status, product_name FROM tasks WHERE id = ANY($1::int[]) FOR UPDATE`, [ids]);
+      const busy = ts.filter((t) => t.status === 'done');
+      if (busy.length) throw new UserError(busy.map((t) => t.product_name).join('、') + ' 已經備貨或出貨，請先到出貨台退回');
+      await client.query(`UPDATE tasks SET status='void', void_at=now() WHERE id = ANY($1::int[]) AND status='open'`, [ids]);
+      await client.query(`UPDATE line_msgs SET status='new', task_ids='[]'::jsonb, handled_at=NULL, handled_by='' WHERE id=$1`, [m.id]);
+      await bump(client);
+      await client.query('COMMIT');
+      res.json({ ok: true, voided: ids.length });
     } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   }));
 
