@@ -264,11 +264,12 @@ function prodOptions(sel,cands){
 }
 function intakeV(){
   const I=S.I,d=S.d;
-  const inbox='<section class="inbox" aria-label="LINE 收件匣"><div class="hd"><span class="lbl">LINE 收件匣'+(d.lineInbox.length?'（'+d.lineInbox.length+'）':'')+'</span><button type="button" class="btn sm" data-ik="paste">貼上 LINE 文字</button></div>'+
+  const inbox='<section class="inbox" aria-label="LINE 收件匣"><div class="hd"><span class="lbl">'+(d.cfg.lineAuto?'要確認的 LINE 訊息':'LINE 收件匣')+(d.lineInbox.length?'（'+d.lineInbox.length+'）':'')+'</span><button type="button" class="btn sm" data-ik="paste">貼上 LINE 文字</button></div>'+
+    '<div style="padding:10px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px"><span class="small">'+(d.cfg.lineAuto?'機器人<b>自動入單</b>：看得懂的直接建單，沒把握的才放這裡':'自動入單已關閉：每則都要人確認')+'</span><button type="button" class="btn sm'+(d.cfg.lineAuto?'':' pri')+'" data-ik="auto">'+(d.cfg.lineAuto?'關閉':'開啟')+'</button></div>'+
     (I.paste?'<div style="padding:12px 14px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--line)"><label class="small muted" for="ik-text">把 LINE 上的訂單整段複製貼上，可以一次好幾位客戶</label><textarea id="ik-text" class="inp" rows="6">'+esc(I.text)+'</textarea><button type="button" class="btn pri sm" data-ik="parse">自動帶入</button></div>':'')+
     (d.lineInbox.length?d.lineInbox.map(m=>'<button type="button" class="msg" data-lin="'+m.id+'"'+(I.lineId===m.id?' aria-current="true"':'')+'><span class="row" style="justify-content:space-between;width:100%"><b class="small">LINE 群組</b><span class="small muted">'+md(new Date(m.at).toISOString().slice(0,10)).replace(/（.）/,'')+' '+hm(m.at)+'</span></span><pre>'+esc(m.text)+'</pre></button>').join('')
-      :'<div class="empty small">'+(d.cfg.lineReady?'目前沒有待處理的 LINE 叫貨訊息。':'LINE 機器人還沒設定好，先用上面「貼上 LINE 文字」。')+'</div>')+
-    '</section>';
+      :'<div class="empty small">'+(d.cfg.lineReady?'目前沒有要確認的 LINE 叫貨訊息。':'LINE 機器人還沒設定好，先用上面「貼上 LINE 文字」。')+'</div>')+
+    autoH()+'</section>';
   const dr=I.draft;
   let mid;
   if(!dr)mid='<section class="draft"><div class="lbl">訂單草稿</div><div class="empty">點左邊一則 LINE 訊息，或貼上 LINE 文字，系統會自動對好客戶、品項和數量。<div style="margin-top:14px"><button type="button" class="btn pri" data-ik="new">手動新增一張訂單</button></div></div></section>';
@@ -297,6 +298,15 @@ function intakeV(){
   }
   return '<div class="ik">'+inbox+mid+'<aside class="side">'+custPanel(dr&&dr.customer)+trackPanel()+'</aside></div>';
 }
+function autoH(){
+  const d=S.d;if(!d.lineAuto||!d.lineAuto.length)return '';
+  const tm=new Map(allTasks().map(t=>[t.id,t]));
+  return '<div style="padding:12px 14px 4px;border-top:2px solid var(--line)" class="lbl">機器人已自動入單（2 天內）</div>'+d.lineAuto.map(m=>{
+    const ts=m.taskIds.map(id=>tm.get(+id)).filter(Boolean);const canUndo=ts.length&&ts.every(t=>t.status==='open');
+    const by={};ts.forEach(t=>{(by[t.customer]=by[t.customer]||[]).push(t)});
+    return '<div class="msg" style="cursor:default"><span class="row" style="justify-content:space-between;width:100%"><span class="tag t-ok">已入單 '+hm(m.doneAt)+'</span>'+(canUndo?'<button type="button" class="lnk" data-lundo="'+m.id+'">撤銷，改成人工確認</button>':'')+'</span>'+
+      '<pre>'+esc(m.text)+'</pre>'+Object.keys(by).map(n=>'<div class="small"><b>'+esc(n)+'</b>（'+md(by[n][0].shipDate)+' '+esc(by[n][0].shipMethod||'')+'）：'+by[n].map(t=>esc(t.productName)+' '+qtyTxt(t.qty,t.unit)).join('、')+'</div>').join('')+'</div>'}).join('');
+}
 function custPanel(name){
   const d=S.d;if(!name)return '';
   const c=custOf(name);
@@ -315,7 +325,7 @@ function trackPanel(){
   const names=Object.keys(by).slice(0,14);
   const steps=['收單','備齊','出車','送達'];
   return '<section class="sbox"><div class="lbl">最近收的單 · 走到哪了</div>'+(names.length?names.map(n=>{const g=by[n],k=Math.min(...g.map(stepIdx));
-    return '<div class="trk"><div class="row" style="justify-content:space-between"><b>'+esc(n)+'</b><span class="small muted">'+g.length+' 項 · 出貨 '+md(g[0].shipDate)+'</span></div><div class="row" style="gap:4px">'+steps.map((s,i)=>'<span class="tag '+(i<=k?'t-ink':'t-dim')+'">'+s+'</span>').join('')+'</div></div>'}).join(''):'<div class="small muted">今天還沒有新訂單。</div>')+'</section>';
+    return '<div class="trk"><div class="row" style="justify-content:space-between"><b>'+esc(n)+(g.some(t=>t.createdBy==='LINE機器人')?' <span class="tag t-dim">LINE 自動</span>':'')+'</b><span class="small muted">'+g.length+' 項 · 出貨 '+md(g[0].shipDate)+'</span></div><div class="row" style="gap:4px">'+steps.map((s,i)=>'<span class="tag '+(i<=k?'t-ink':'t-dim')+'">'+s+'</span>').join('')+'</div></div>'}).join(''):'<div class="small muted">今天還沒有新訂單。</div>')+'</section>';
 }
 const ik=$('#main');
 ik.addEventListener('input',e=>{
@@ -357,6 +367,8 @@ function ikClick(e){
   if(b.dataset.meth&&dr){dr.method=b.dataset.meth;dr.methodGuess=false;render();return}
   if(b.dataset.addp){if(!dr){I.draft=blankDraft()}const d2=I.draft;const empty=d2.lines.find(l=>!l.p&&!l.q);const l={p:b.dataset.addp,q:'',u:unitGuess(b.dataset.addp,d2.customer),raw:'',unsure:false,cands:[]};if(empty)Object.assign(empty,l);else d2.lines.push(l);render();return}
   if(b.dataset.void){if(!confirm('確定取消這筆訂單？'))return;act(()=>api('POST','/api/tasks/'+b.dataset.void+'/void'),'已取消');return}
+  if(k==='auto'){const on=!S.d.cfg.lineAuto;if(!on&&!confirm('關閉後，LINE 訊息都要人工確認才會建單。確定關閉？'))return;act(()=>api('POST','/api/v2/line-auto',{on}),on?'已開啟自動入單':'已關閉自動入單');return}
+  if(b.dataset.lundo){if(!confirm('撤銷這則的自動入單？建好的單會取消，訊息回到上面讓你修正後再建。'))return;act(()=>api('POST','/api/v2/line-undo/'+b.dataset.lundo),'已撤銷，請在上面重新確認這則訊息');return}
   if(k==='notorder'&&I.lineId){const id=I.lineId;act(()=>api('POST','/api/line/inbox/'+id,{status:'dismissed',operator:S.op}),'已略過這則訊息').then(()=>{I.blocks=[];I.lineId=null;I.draft=null;render()});return}
   if(k==='save'&&dr)saveDraft();
 }
